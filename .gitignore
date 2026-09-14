@@ -6,3 +6,6 @@ outputs/
 work/
 assets/music/*
 !assets/music/.gitkeep
+*.csv
+*.zip
+*.mp4
