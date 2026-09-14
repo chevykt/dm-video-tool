@@ -1,6 +1,7 @@
 # pipeline/runner.py
 import shutil
 import subprocess
+from pathlib import Path
 
 
 class FFmpegMissing(RuntimeError):
@@ -22,8 +23,19 @@ def ensure_ffmpeg() -> None:
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+    )
     if proc.returncode != 0:
-        tail = "\n".join(proc.stderr.strip().splitlines()[-20:])
+        stderr = (proc.stderr or "").strip()
+        if not stderr:
+            raise FFmpegFailed(
+                f"{Path(cmd[0]).name} exited {proc.returncode} with no error output."
+            )
+        tail = "\n".join(stderr.splitlines()[-20:])
         raise FFmpegFailed(f"FFmpeg exited {proc.returncode}:\n{tail}")
     return proc
