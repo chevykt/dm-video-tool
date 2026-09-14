@@ -116,3 +116,64 @@ def test_duplicate_image_across_zips_fails_loudly(tmp_path):
     # build_scenes should fail loudly on duplicate ids
     with pytest.raises(ValueError, match=r"Duplicate images for ids: \[1\]"):
         build_scenes(extracted, _csv(tmp_path, rows), CFG)
+
+
+def _raw_csv(tmp_path, header, rows):
+    """Write a CSV with an arbitrary header row (bypassing the fixed-column _csv helper)."""
+    p = tmp_path / "sheet.csv"
+    with open(p, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        for r in rows:
+            w.writerow(r)
+    return p
+
+
+def test_wrong_tab_csv_names_missing_columns(tmp_path):
+    # A CSV exported from the wrong Google Sheet tab: no conversation_id/message at all.
+    csv_path = _raw_csv(tmp_path, ["key", "value"], [["a", "b"]])
+    with pytest.raises(ValueError, match=r"Sheet CSV is missing required column\(s\):"):
+        build_scenes([Path("conversation_1.png")], csv_path, CFG)
+
+
+def test_empty_csv_reports_missing_columns(tmp_path):
+    csv_path = tmp_path / "empty.csv"
+    csv_path.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"Sheet CSV is missing required column\(s\):"):
+        build_scenes([Path("conversation_1.png")], csv_path, CFG)
+
+
+def test_header_case_and_whitespace_are_tolerated(tmp_path):
+    csv_path = _raw_csv(
+        tmp_path,
+        [" Conversation_ID ", "Name", "Message", "Zoom", "Shake"],
+        [[1, "Mina", "hi", "", ""]],
+    )
+    scenes = build_scenes([Path("conversation_1.png")], csv_path, CFG)
+    assert len(scenes) == 1
+    assert scenes[0].speaker == "Mina"
+    assert scenes[0].text == "hi"
+
+
+def test_non_numeric_conversation_id_names_value_and_line(tmp_path):
+    csv_path = _raw_csv(
+        tmp_path,
+        ["conversation_id", "name", "message", "zoom", "shake"],
+        [["abc", "Mina", "hi", "", ""]],
+    )
+    with pytest.raises(ValueError, match=r"abc") as exc_info:
+        build_scenes([Path("conversation_1.png")], csv_path, CFG)
+    assert "line 2" in str(exc_info.value)
+
+
+def test_macos_resource_fork_entries_are_skipped(tmp_path):
+    zip_path = tmp_path / "batch.zip"
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("conversation_1.png", b"png")
+        z.writestr("__MACOSX/._conversation_1.png", b"resource fork junk")
+
+    dest = tmp_path / "extracted"
+    paths = extract_zips([zip_path], dest)
+
+    names = sorted(p.name for p in paths)
+    assert names == ["conversation_1.png"]

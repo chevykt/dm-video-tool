@@ -1,7 +1,8 @@
 import csv
 import re
 import zipfile
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 from config import Config
@@ -33,7 +34,7 @@ def scene_id_from_filename(name: str) -> int:
     return int(m.group(1))
 
 
-def extract_zips(zip_paths, dest: Path) -> list[Path]:
+def extract_zips(zip_paths: list[Path], dest: Path) -> list[Path]:
     """Flatten every PNG from every zip into dest. Returns the extracted paths."""
     dest.mkdir(parents=True, exist_ok=True)
     out = []
@@ -42,7 +43,12 @@ def extract_zips(zip_paths, dest: Path) -> list[Path]:
             for member in z.namelist():
                 if not member.lower().endswith(".png"):
                     continue
-                target = dest / Path(member).name
+                member_path = Path(member)
+                if "__MACOSX" in member_path.parts:
+                    continue
+                if member_path.name.startswith("._"):
+                    continue
+                target = dest / member_path.name
                 with z.open(member) as src, open(target, "wb") as dst:
                     dst.write(src.read())
                 out.append(target)
@@ -53,24 +59,48 @@ def _truthy(value) -> bool:
     return str(value or "").strip().lower() in TRUTHY
 
 
+REQUIRED_COLUMNS = ("conversation_id", "message")
+
+
+def _normalize_row(row: dict) -> dict:
+    return {(k or "").strip().lower(): v for k, v in row.items()}
+
+
 def _rows_by_id(csv_path: Path) -> dict[int, list[dict]]:
     groups: dict[int, list[dict]] = {}
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
+        reader = csv.DictReader(f)
+        found = sorted({(fn or "").strip().lower() for fn in (reader.fieldnames or []) if (fn or "").strip()})
+        missing = [c for c in REQUIRED_COLUMNS if c not in found]
+        if missing:
+            raise ValueError(
+                f"Sheet CSV is missing required column(s): {', '.join(missing)}. "
+                f"Columns found: {found or '(none)'}. "
+                "If this looks wrong, you may have exported the wrong tab from the Google Sheet."
+            )
+        # Row 1 is the header, so the first data row is CSV line 2.
+        for line_no, raw_row in enumerate(reader, start=2):
+            row = _normalize_row(raw_row)
             raw_id = (row.get("conversation_id") or "").strip()
             message = (row.get("message") or "").strip()
             if not raw_id or not message:
                 continue
-            groups.setdefault(int(raw_id), []).append(row)
+            try:
+                cid = int(raw_id)
+            except ValueError:
+                raise ValueError(
+                    f"Non-numeric conversation_id {raw_id!r} on CSV line {line_no}."
+                ) from None
+            groups.setdefault(cid, []).append(row)
     return groups
 
 
-def build_scenes(image_paths, csv_path: Path, cfg: Config) -> list[Scene]:
+def build_scenes(image_paths: list[Path], csv_path: Path, cfg: Config) -> list[Scene]:
     groups = _rows_by_id(csv_path)
 
     # Check for duplicate image ids
     ids = [scene_id_from_filename(p.name) for p in image_paths]
-    duplicates = sorted(set(id for id in ids if ids.count(id) > 1))
+    duplicates = sorted(sid for sid, count in Counter(ids).items() if count > 1)
     if duplicates:
         raise ValueError(
             f"Duplicate images for ids: {duplicates}. "
