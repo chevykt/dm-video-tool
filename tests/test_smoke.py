@@ -45,3 +45,20 @@ def test_silent_render_end_to_end(tmp_path):
 
     assert out.exists()
     assert abs(_probe_duration(out) - 4.5) < 0.1
+
+
+def test_silent_render_survives_apostrophe_in_work_dir(tmp_path):
+    cfg = Config()
+    root = tmp_path / "O'Brien"
+    root.mkdir()
+    scenes = []
+    for i, h in enumerate([340, 520, 410], start=1):
+        img = root / f"conversation_{i}.png"
+        _make_png(img, 1200, h)
+        scenes.append(Scene(id=i, image_path=img, text="x", speaker="Mina",
+                            duration=1.5))
+
+    out = render_silent(scenes, cfg, root / "work", root / "silent.mp4")
+
+    assert out.exists()
+    assert abs(_probe_duration(out) - 4.5) < 0.1

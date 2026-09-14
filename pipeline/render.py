@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from config import Config
-from pipeline.ffmpeg_cmd import build_clips_for_scene, build_concat_cmd
+from pipeline.ffmpeg_cmd import build_clips_for_scene, build_concat_cmd, concat_list_text
 from pipeline.runner import ensure_ffmpeg, run
 
 
@@ -22,9 +22,6 @@ def render_silent(scenes, cfg: Config, workdir: Path, out_path: Path,
             progress(i, len(scenes))
 
     list_file = workdir / "list.txt"
-    list_file.write_text(
-        "".join(f"file '{c.resolve().as_posix()}'\n" for c in clips),
-        encoding="utf-8",
-    )
+    list_file.write_text(concat_list_text(clips), encoding="utf-8")
     run(build_concat_cmd(list_file, out_path))
     return out_path

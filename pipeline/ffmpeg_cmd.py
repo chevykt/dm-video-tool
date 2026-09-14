@@ -41,6 +41,16 @@ def build_clips_for_scene(scene: Scene, cfg: Config, clips_dir: Path):
     return [(build_scene_clip_cmd(scene, cfg, out), out)]
 
 
+def concat_list_text(clips: list[Path]) -> str:
+    """Build the concat-demuxer list file contents, escaping apostrophes
+    per the demuxer's single-quote quoting rule (' -> '\\'')."""
+    lines = []
+    for c in clips:
+        escaped = c.resolve().as_posix().replace("'", "'\\''")
+        lines.append(f"file '{escaped}'\n")
+    return "".join(lines)
+
+
 def build_concat_cmd(list_file: Path, out_path: Path) -> list[str]:
     return ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
             "-i", str(list_file), "-c", "copy", str(out_path)]

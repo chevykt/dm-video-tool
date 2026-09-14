@@ -3,6 +3,7 @@ from config import Config
 from pipeline.scenes import Scene
 from pipeline.ffmpeg_cmd import (
     composite_filter, build_scene_clip_cmd, build_concat_cmd, build_mux_cmd,
+    concat_list_text,
 )
 
 CFG = Config()
@@ -44,3 +45,21 @@ def test_mux_keeps_video_untouched():
     assert cmd[cmd.index("-c:v") + 1] == "copy"
     assert cmd[cmd.index("-c:a") + 1] == "aac"
     assert "-movflags" in cmd and cmd[cmd.index("-movflags") + 1] == "+faststart"
+
+
+def test_concat_list_text_formats_plain_paths():
+    clips = [Path("clips/scene_00001.mp4"), Path("clips/scene_00002.mp4")]
+    text = concat_list_text(clips)
+    lines = text.splitlines()
+    assert len(lines) == 2
+    for c, line in zip(clips, lines):
+        assert line == f"file '{c.resolve().as_posix()}'"
+    assert text.endswith("\n")
+
+
+def test_concat_list_text_escapes_apostrophes():
+    clip = Path("work/O'Brien/clips/scene_00001.mp4")
+    text = concat_list_text([clip])
+    resolved = clip.resolve().as_posix()
+    escaped = resolved.replace("'", "'\\''")
+    assert text == f"file '{escaped}'\n"
