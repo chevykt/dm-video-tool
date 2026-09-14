@@ -67,6 +67,16 @@ def _rows_by_id(csv_path: Path) -> dict[int, list[dict]]:
 
 def build_scenes(image_paths, csv_path: Path, cfg: Config) -> list[Scene]:
     groups = _rows_by_id(csv_path)
+
+    # Check for duplicate image ids
+    ids = [scene_id_from_filename(p.name) for p in image_paths]
+    duplicates = sorted(set(id for id in ids if ids.count(id) > 1))
+    if duplicates:
+        raise ValueError(
+            f"Duplicate images for ids: {duplicates}. "
+            f"Each conversation_<id>.png must appear exactly once across all uploaded zips."
+        )
+
     images = {scene_id_from_filename(p.name): Path(p) for p in image_paths}
 
     orphan_images = sorted(set(images) - set(groups))

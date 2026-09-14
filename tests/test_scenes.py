@@ -1,8 +1,9 @@
 import csv
 import pytest
+import zipfile
 from pathlib import Path
 from config import Config
-from pipeline.scenes import scene_id_from_filename, build_scenes
+from pipeline.scenes import scene_id_from_filename, build_scenes, extract_zips
 
 CFG = Config()
 
@@ -66,3 +67,52 @@ def test_flags_are_read_from_the_sheet(tmp_path):
     scenes = build_scenes([Path("conversation_1.png")], _csv(tmp_path, rows), CFG)
     assert scenes[0].zoom is True
     assert scenes[0].shake is False
+
+
+def test_extract_zips_flattens_pngs_from_every_zip(tmp_path):
+    # Create two zips: one with nested member, one non-PNG member
+    zip1_path = tmp_path / "batch1.zip"
+    with zipfile.ZipFile(zip1_path, "w") as z:
+        z.writestr("conversation_1.png", b"png")
+        z.writestr("batch/conversation_2.png", b"png")  # nested
+
+    zip2_path = tmp_path / "batch2.zip"
+    with zipfile.ZipFile(zip2_path, "w") as z:
+        z.writestr("conversation_3.png", b"png")
+        z.writestr("notes.txt", b"not a png")  # non-PNG, should be skipped
+
+    dest = tmp_path / "extracted"
+    paths = extract_zips([zip1_path, zip2_path], dest)
+
+    # Check returned paths
+    path_names = sorted([p.name for p in paths])
+    assert path_names == ["conversation_1.png", "conversation_2.png", "conversation_3.png"]
+
+    # Check all returned paths exist directly under dest (flattened)
+    for p in paths:
+        assert p.parent == dest
+        assert p.exists()
+
+    # Check .txt was not extracted
+    assert not (dest / "notes.txt").exists()
+
+
+def test_duplicate_image_across_zips_fails_loudly(tmp_path):
+    # Create two zips that both contain conversation_1.png
+    zip1_path = tmp_path / "batch1.zip"
+    with zipfile.ZipFile(zip1_path, "w") as z:
+        z.writestr("conversation_1.png", b"png")
+
+    zip2_path = tmp_path / "batch2.zip"
+    with zipfile.ZipFile(zip2_path, "w") as z:
+        z.writestr("conversation_1.png", b"png")
+
+    dest = tmp_path / "extracted"
+    extracted = extract_zips([zip1_path, zip2_path], dest)
+
+    # Create CSV with row for id 1
+    rows = [{"conversation_id": 1, "name": "Mina", "message": "a", "zoom": "", "shake": ""}]
+
+    # build_scenes should fail loudly on duplicate ids
+    with pytest.raises(ValueError, match=r"Duplicate images for ids: \[1\]"):
+        build_scenes(extracted, _csv(tmp_path, rows), CFG)
