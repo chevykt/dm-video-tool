@@ -7,9 +7,11 @@ not installed).
 """
 import csv
 import json
+import os
 import re
 import shutil
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -292,6 +294,84 @@ def test_an_unexpected_render_error_shows_a_plain_message_with_details(tmp_path,
     details = next(e for e in at.expander if e.label == "Details")
     assert "an error nobody planned for" in details.exception[0].message
     assert at.session_state["rendering"] is False
+
+
+def _work_dirs(root):
+    return sorted(p for p in root.iterdir() if p.name.startswith("dmvideo_"))
+
+
+def test_loading_again_deletes_the_previous_work_dir(tmp_path, temp_root):
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    first = Path(at.session_state["work"])
+    assert _work_dirs(temp_root) == [first]
+
+    next(b for b in at.button if b.label == "Load scenes").click()
+    at.run()
+
+    assert not at.exception and not at.error
+    second = Path(at.session_state["work"])
+    assert second != first
+    assert _work_dirs(temp_root) == [second]
+
+
+def test_a_failed_load_leaves_no_dir_and_keeps_the_loaded_conversation(tmp_path, temp_root):
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    loaded = Path(at.session_state["work"])
+
+    bad_csv = tmp_path / "wrong_tab.csv"
+    bad_csv.write_text("something,else\n1,2\n", encoding="utf-8")
+    at.file_uploader[1].set_value((bad_csv.name, bad_csv.read_bytes(), "text/csv"))
+    at.run()
+    next(b for b in at.button if b.label == "Load scenes").click()
+    at.run()
+
+    assert len(at.error) == 1
+    assert "missing required column" in at.error[0].value
+    assert _work_dirs(temp_root) == [loaded]
+    assert Path(at.session_state["work"]) == loaded
+
+
+def test_a_finished_render_deletes_its_intermediate_files(tmp_path, monkeypatch):
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    work = Path(at.session_state["work"])
+
+    def fake(scenes, cfg, workdir, out_path, progress=None):
+        (workdir / "clips").mkdir(parents=True)
+        (workdir / "clips" / "clip_0001.mp4").write_bytes(b"clip")
+        (workdir / "track.wav").write_bytes(b"wav")
+        Path(out_path).write_bytes(b"final")
+        return out_path
+
+    monkeypatch.setattr("pipeline.render.render", fake)
+    _click_render(at)
+
+    assert not at.exception and not at.error
+    assert (work / "final.mp4").exists()
+    assert not (work / "render").exists()
+
+
+def test_app_start_sweeps_work_dirs_older_than_a_day(temp_root):
+    old = temp_root / "dmvideo_from_last_week"
+    old.mkdir()
+    (old / "sheet.csv").write_text("x", encoding="utf-8")
+    week_ago = time.time() - 7 * 24 * 60 * 60
+    os.utime(old / "sheet.csv", (week_ago, week_ago))
+    os.utime(old, (week_ago, week_ago))
+    recent = temp_root / "dmvideo_from_this_morning"
+    recent.mkdir()
+
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    at.run()
+
+    assert not at.exception
+    assert not old.exists()
+    assert recent.exists()
 
 
 def test_overall_speed_slider_shortens_the_runtime(tmp_path):

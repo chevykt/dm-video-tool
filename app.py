@@ -1,10 +1,10 @@
 # app.py
-import tempfile
 from dataclasses import replace
 from pathlib import Path
 
 import streamlit as st
 
+import workdirs
 from config import Config
 from pipeline.audio import build_track
 from pipeline.render import render
@@ -65,6 +65,12 @@ st.session_state.setdefault("rendered", None)
 st.session_state.setdefault("render_error", None)
 busy = st.session_state.rendering
 
+# Once per session: delete work folders left behind by sessions that ended
+# more than a day ago (a closed tab never gets to clean up after itself).
+if "swept" not in st.session_state:
+    workdirs.sweep_stale(keep=st.session_state.get("work"))
+    st.session_state.swept = True
+
 # Timing controls. Slider values live only for this session; config.py holds
 # the defaults they start from. app.py builds a Config, never an FFmpeg arg.
 with st.sidebar:
@@ -104,7 +110,7 @@ zips = st.file_uploader("Image zips from Generate All", type="zip",
 csv_file = st.file_uploader("Sheet exported as CSV", type="csv", disabled=busy)
 
 if zips and csv_file and st.button("Load scenes", disabled=busy):
-    work = Path(tempfile.mkdtemp(prefix="dmvideo_"))
+    work = workdirs.new_work_dir()
     zip_paths = []
     for z in zips:
         p = work / z.name
@@ -117,9 +123,13 @@ if zips and csv_file and st.button("Load scenes", disabled=busy):
         images = extract_zips(zip_paths, work / "images")
         scenes = build_scenes(images, csv_path, cfg)
     except ValueError as e:
+        workdirs.remove(work)
         st.error(str(e))
         st.stop()
 
+    # Only once the new conversation has loaded: a failed load keeps the one
+    # already on screen, and its files, as they were.
+    workdirs.remove(st.session_state.get("work"))
     st.session_state.work = str(work)
     st.session_state.scenes = scenes
     st.session_state.overrides = {}
@@ -220,6 +230,9 @@ if "scenes" in st.session_state:
             st.session_state.render_error = e
         else:
             st.session_state.rendered = str(out)
+            # The clips, silent video and audio track (about 140 MB for 200
+            # messages) are not needed once final.mp4 exists.
+            workdirs.remove(work / "render")
         st.rerun()  # redraw with every control enabled again
 
     render_error = st.session_state.render_error
