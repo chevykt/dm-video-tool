@@ -16,6 +16,8 @@
 - Every clip, animated or not, must end with identical codec, fps, dimensions and pixel format, or `concat -c copy` fails.
 - `render.py` must never import streamlit. `app.py` must never build an FFmpeg argument. This separation was promised to the client in writing.
 - Audio offsets accumulate in **integer milliseconds**, never floats.
+- Every clip is a whole number of frames, `frames_for(duration, fps) = max(1, round(duration * fps))`, passed to FFmpeg as `-frames:v`, never as `-t`. Audio offsets and the track length come from the same frame counts, so picture and sound cannot drift apart. (Added 2026-09-15.)
+- Every clip reads its still with `-framerate {fps}`, so time-based filters run at the output rate. (Added 2026-09-15.)
 - Images join to CSV rows by the id parsed from `conversation_<id>.png`, never by sort order.
 - Timing defaults: `base=1.0`, `per_word=0.34`, `chars_per_sec=17`, `min=1.2`, `max=7.0`, `speed=1.0` (speed added in Task 8; stage 1 pacing was approved at these values).
 - `.env` and `outputs/` are gitignored from the first commit. No API key ever reaches the repo.
@@ -558,6 +560,8 @@ git add pipeline/ffmpeg_cmd.py tests/test_ffmpeg_cmd.py
 git commit -m "feat: pure ffmpeg command builders for composite, clip, concat and mux"
 ```
 
+> **Amended 2026-09-15 (pre-audio fixes, after stage 1 approval).** `build_scene_clip_cmd` now adds `-framerate {fps}` on the input and cuts clips with `-frames:v {frames_for(duration, fps)}` instead of `-t`. On FFmpeg 9 `-t` over-counted some clips, for example 1.51s gave 46 frames instead of 45. `frames_for` lives in `pipeline/timing.py`. The code above is the original; the repo is authoritative.
+
 ---
 
 ### Task 5: Runner and silent render — STAGE 1 DELIVERABLE
@@ -724,12 +728,22 @@ Then dispatch a reviewer per superpowers:requesting-code-review with `BASE_SHA` 
 - Test: `tests/test_audio.py`
 
 **Interfaces:**
-- Consumes: `Scene` (Task 3), `Config` (Task 1), `build_mux_cmd` (Task 4), `render_silent` (Task 5)
+- Consumes: `Scene` (Task 3), `Config` (Task 1), `frames_for` (pre-audio fixes, `pipeline/timing.py`), `build_mux_cmd` (Task 4), `render_silent` (Task 5)
 - Produces:
-  - `sfx_offsets_ms(scenes) -> list[int]`
-  - `total_ms(scenes) -> int`
+  - `sfx_offsets_ms(scenes, cfg) -> list[int]`
+  - `total_ms(scenes, cfg) -> int`
   - `build_track(scenes, cfg, out_path) -> Path`
   - `render(scenes, cfg, workdir, out_path, progress=None) -> Path`
+
+**Amended 2026-09-15.** Every clip is cut to exactly `frames_for(duration, fps)` frames (see Global Constraints), so audio timing comes from the same frame counts, not from summed durations. Summing per-scene milliseconds would put the sound up to about a second off by scene 200, and it would also make the track a different length from the picture, which the mux's `-shortest` would then trim.
+
+- [ ] **Step 0: Install the audio dependencies**
+
+```bash
+pip install -r requirements.txt
+```
+
+`requirements.txt` includes `audioop-lts` on Python 3.13+, because pydub imports the `audioop` module that 3.13 removed. Check with `python -c "from pydub import AudioSegment"`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -740,26 +754,35 @@ from config import Config
 from pipeline.scenes import Scene
 from pipeline.audio import sfx_offsets_ms, total_ms
 
+CFG = Config()
 
-def _scenes(n, duration):
+
+def _scenes(*durations):
     return [Scene(id=i, image_path=Path(f"conversation_{i}.png"), text="x",
-                  speaker="Mina", duration=duration) for i in range(1, n + 1)]
+                  speaker="Mina", duration=d) for i, d in enumerate(durations, start=1)]
 
 
 def test_first_sfx_fires_at_zero():
-    assert sfx_offsets_ms(_scenes(3, 2.0))[0] == 0
+    assert sfx_offsets_ms(_scenes(2.0, 2.0, 2.0), CFG)[0] == 0
+
+
+def test_offsets_land_on_the_frame_each_clip_starts():
+    # 2.02s = 61 frames, 1.51s = 45 frames: clips start at frames 0, 61, 106
+    assert sfx_offsets_ms(_scenes(2.02, 1.51, 3.34), CFG) == [0, 2033, 3533]
 
 
 def test_offsets_are_integers_and_do_not_drift_over_200_scenes():
-    offsets = sfx_offsets_ms(_scenes(200, 2.333))
+    offsets = sfx_offsets_ms(_scenes(*[2.333] * 200), CFG)
     assert all(isinstance(o, int) for o in offsets)
-    # 2.333s -> 2333ms exactly, so scene 200 starts at 199 * 2333
-    assert offsets[-1] == 199 * 2333
+    # 2.333s is 70 whole frames, so scene 200 starts at frame 199 * 70 = 13930,
+    # which is 464333ms. Summing 2333ms per scene would say 464267ms: 66ms early.
+    assert offsets[-1] == 464333
 
 
-def test_total_is_the_last_offset_plus_the_last_scene():
-    scenes = _scenes(3, 1.5)
-    assert total_ms(scenes) == 4500
+def test_total_covers_the_whole_picture():
+    assert total_ms(_scenes(1.5, 1.5, 1.5), CFG) == 4500
+    # 61 frames is 2033.3ms: rounded up, so the track is never shorter than the video
+    assert total_ms(_scenes(2.02), CFG) == 2034
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
@@ -776,28 +799,32 @@ from pathlib import Path
 from pydub import AudioSegment
 
 from config import Config
+from pipeline.timing import frames_for
 
 
-def _ms(seconds: float) -> int:
-    return int(round(seconds * 1000))
+def sfx_offsets_ms(scenes, cfg: Config) -> list[int]:
+    """Start time of every scene in whole milliseconds.
 
-
-def sfx_offsets_ms(scenes) -> list[int]:
-    """Start time of every scene in whole milliseconds. Integers only: float
-    accumulation is audible as drift by the end of a 200 scene video."""
-    offsets, cursor = [], 0
+    Taken from the running total of whole frames, the same number each video
+    clip is cut to, so the sound cannot drift from the picture. Each offset is
+    within half a millisecond of its frame and the error never accumulates.
+    """
+    offsets, frames = [], 0
     for scene in scenes:
-        offsets.append(cursor)
-        cursor += _ms(scene.duration)
+        offsets.append(round(frames * 1000 / cfg.fps))
+        frames += frames_for(scene.duration, cfg.fps)
     return offsets
 
 
-def total_ms(scenes) -> int:
-    return sum(_ms(s.duration) for s in scenes)
+def total_ms(scenes, cfg: Config) -> int:
+    """Video length in whole milliseconds, rounded up so the track is never
+    shorter than the picture (the mux uses -shortest)."""
+    frames = sum(frames_for(s.duration, cfg.fps) for s in scenes)
+    return -(-frames * 1000 // cfg.fps)
 
 
 def build_track(scenes, cfg: Config, out_path: Path) -> Path:
-    total = total_ms(scenes)
+    total = total_ms(scenes, cfg)
     track = AudioSegment.silent(duration=total)
 
     if cfg.music_path and Path(cfg.music_path).exists():
@@ -808,7 +835,7 @@ def build_track(scenes, cfg: Config, out_path: Path) -> Path:
         track = track.overlay(bed[:total])
 
     cache: dict[str, AudioSegment] = {}
-    for scene, offset in zip(scenes, sfx_offsets_ms(scenes)):
+    for scene, offset in zip(scenes, sfx_offsets_ms(scenes, cfg)):
         if scene.sfx not in cache:
             cache[scene.sfx] = AudioSegment.from_file(cfg.sfx_path(scene.sfx)) + cfg.sfx_gain_db
         track = track.overlay(cache[scene.sfx], position=offset)
@@ -839,7 +866,7 @@ def render(scenes, cfg: Config, workdir: Path, out_path: Path,
 - [ ] **Step 5: Run the suite and commit**
 
 Run: `pytest tests/ -v`
-Expected: 19 passed
+Expected: everything passes, including the 4 new audio tests, with the smoke tests not skipped
 
 ```bash
 git add pipeline/audio.py pipeline/render.py tests/test_audio.py
@@ -861,8 +888,10 @@ Drop the client's SFX into `assets/sfx/pop.wav` and their music into `assets/mus
 - Test: `tests/test_animation.py`
 
 **Interfaces:**
-- Consumes: `composite_filter` (Task 4)
+- Consumes: `composite_filter` (Task 4), `frames_for` (pre-audio fixes, `pipeline/timing.py`)
 - Produces: `zoom_filter`, `punch_filter`, `shake_filter`, and updated `scene_filter` / `build_clips_for_scene`
+
+**Amended 2026-09-15.** Clips are cut with `-frames:v`, not `-t`, and every clip reads its still with `-framerate {fps}`. The time-based shake needs that input rate, otherwise it gets duplicated frames. The punch-in split works in whole frames, so its two clips add up to exactly the scene's frame count and the audio offsets from Task 6 stay correct.
 
 ⏱ **Timebox the animated zoom to 45 minutes.** If it still jitters, set `zoom_mode = "punch"` and move on. The punch-in cut is a complete delivery of the promised feature, not a downgrade.
 
@@ -920,12 +949,19 @@ def test_animated_clips_keep_the_same_encoder_settings_as_plain_ones():
     assert plain == zoomed == shaken
 
 
-def test_punch_mode_emits_two_clips_that_sum_to_the_duration():
+def test_punch_mode_emits_two_clips_that_sum_to_the_scene_frames():
     cfg = Config(zoom_mode="punch")
     clips = build_clips_for_scene(_scene(zoom=True), cfg, Path("/tmp"))
     assert len(clips) == 2
-    durations = [float(c[0][c[0].index("-t") + 1]) for c in clips]
-    assert abs(sum(durations) - 2.0) < 0.001
+    frames = [int(cmd[cmd.index("-frames:v") + 1]) for cmd, _ in clips]
+    assert frames == [24, 36]     # 2.0s = 60 frames, split 40% / 60%
+
+
+def test_punch_split_never_loses_or_gains_a_frame():
+    cfg = Config(zoom_mode="punch")
+    clips = build_clips_for_scene(_scene(zoom=True, duration=2.02), cfg, Path("/tmp"))
+    frames = [int(cmd[cmd.index("-frames:v") + 1]) for cmd, _ in clips]
+    assert sum(frames) == 61      # frames_for(2.02, 30)
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
@@ -938,9 +974,11 @@ Expected: FAIL, `scene_filter` currently ignores the flags
 ```python
 from dataclasses import replace
 
+# frames_for is already imported from pipeline.timing by the pre-audio fixes
+
 
 def zoom_filter(scene: Scene, cfg: Config) -> str:
-    frames = max(1, round(scene.duration * cfg.fps))
+    frames = frames_for(scene.duration, cfg.fps)
     return (
         f"{composite_filter(cfg)},"
         f"scale={cfg.width * 2}:{cfg.height * 2},"
@@ -978,8 +1016,13 @@ def scene_filter(scene: Scene, cfg: Config) -> str:
 
 def build_clips_for_scene(scene: Scene, cfg: Config, clips_dir: Path):
     if scene.zoom and cfg.zoom_mode == "punch":
-        head = replace(scene, duration=scene.duration * cfg.punch_split, zoom=False)
-        tail = replace(scene, duration=scene.duration * (1 - cfg.punch_split), zoom=False)
+        # Split in whole frames so the two clips add up to exactly the frames
+        # the audio offsets assume for this scene.
+        total = frames_for(scene.duration, cfg.fps)
+        head_frames = max(1, round(total * cfg.punch_split))
+        tail_frames = max(1, total - head_frames)
+        head = replace(scene, duration=head_frames / cfg.fps, zoom=False)
+        tail = replace(scene, duration=tail_frames / cfg.fps, zoom=False)
         pa = clips_dir / f"scene_{scene.id:05d}a.mp4"
         pb = clips_dir / f"scene_{scene.id:05d}b.mp4"
         return [
@@ -993,9 +1036,9 @@ def build_clips_for_scene(scene: Scene, cfg: Config, clips_dir: Path):
 - [ ] **Step 4: Run the suite and confirm concat still works**
 
 Run: `pytest tests/ -v`
-Expected: 23 passed
+Expected: everything passes, including the 5 new animation tests
 
-Then render a real conversation with two or three scenes flagged. **If concat starts failing here, the animated clip settings drifted from the plain ones. Fix the settings, never the concat.**
+Then render a real conversation with two or three scenes flagged, and confirm with `ffprobe` that the total frame count still equals the sum of `frames_for` over all scenes. **If concat starts failing here, the animated clip settings drifted from the plain ones. Fix the settings, never the concat.**
 
 - [ ] **Step 5: Commit**
 
@@ -1116,6 +1159,7 @@ from config import Config
 from pipeline.render import render
 from pipeline.runner import FFmpegFailed, FFmpegMissing, ensure_ffmpeg
 from pipeline.scenes import build_scenes, extract_zips, retime
+from pipeline.timing import frames_for
 
 st.set_page_config(page_title="DM Video Renderer", layout="wide")
 st.title("DM Video Renderer")
@@ -1188,7 +1232,8 @@ if "scenes" in st.session_state:
     overrides: dict[int, float] = st.session_state.overrides
     retime(scenes, cfg, overrides)  # sliders apply to every scene not set by hand
 
-    total = sum(s.duration for s in scenes)
+    # The exact video length: clips are cut to whole frames.
+    total = sum(frames_for(s.duration, cfg.fps) for s in scenes) / cfg.fps
     st.caption(f"{len(scenes)} scenes, {_runtime(total)}"
                + (f", {len(overrides)} set by hand" if overrides else ""))
 
@@ -1278,7 +1323,7 @@ Check, in order:
 4. Tick a zoom and change one sfx, then move a slider. Both edits survive. This is the `st.session_state` trap, now also exercised by the sliders.
 5. Change one **Advanced timing rules** value and confirm the runtime responds.
 6. Press **Reset all to the rule**. The hand-set mark clears and that scene follows the sliders again.
-7. Render and download. Check the mp4's length against the caption with `ffprobe`. It should match to within about a frame per scene, until the frame-rounding fix lands.
+7. Render and download. Check the mp4's length against the caption with `ffprobe`. It should match to the second, because the caption counts the same whole frames the clips are cut to.
 
 - [ ] **Step 7: Commit**
 
