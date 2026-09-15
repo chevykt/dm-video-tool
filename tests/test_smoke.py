@@ -5,9 +5,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pydub.generators import Sine
 
 from config import Config
-from pipeline.render import render_silent
+from pipeline.render import render, render_silent
 from pipeline.scenes import Scene
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None,
@@ -107,3 +108,46 @@ def test_render_length_is_an_exact_whole_number_of_frames(tmp_path):
     assert stream["height"] == 1080
     assert stream["r_frame_rate"] == "30/1"
     assert stream["pix_fmt"] == "yuv420p"
+
+
+def _probe_stream_codecs(path: Path) -> list[dict]:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name",
+         "-of", "json", str(path)],
+        capture_output=True, text=True, check=True,
+    )
+    return json.loads(out.stdout)["streams"]
+
+
+def test_render_muxes_exactly_one_video_and_one_audio_stream(tmp_path):
+    durations = [2.02, 1.51, 3.34]
+    scenes = []
+    for i, (h, dur) in enumerate(zip([340, 520, 410], durations), start=1):
+        img = tmp_path / f"conversation_{i}.png"
+        _make_png(img, 1200, h)
+        scenes.append(Scene(id=i, image_path=img, text="x", speaker="Mina",
+                            duration=dur))
+
+    sfx_dir = tmp_path / "sfx"
+    sfx_dir.mkdir()
+    Sine(1000).to_audio_segment(duration=50).export(sfx_dir / "pop.wav", format="wav")
+
+    # Shorter than the video, so build_track's loop-to-fill path runs.
+    music_path = tmp_path / "music.wav"
+    Sine(400).to_audio_segment(duration=2000).export(music_path, format="wav")
+
+    cfg = Config(sfx_dir=sfx_dir, music_path=music_path)
+
+    out = render(scenes, cfg, tmp_path / "work", tmp_path / "final.mp4")
+
+    streams = _probe_stream_codecs(out)
+    video_streams = [s for s in streams if s["codec_type"] == "video"]
+    audio_streams = [s for s in streams if s["codec_type"] == "audio"]
+    assert len(video_streams) == 1
+    assert video_streams[0]["codec_name"] == "h264"
+    assert len(audio_streams) == 1
+    assert audio_streams[0]["codec_name"] == "aac"
+
+    expected_frames = 61 + 45 + 100
+    assert _probe_packet_count(out) == expected_frames
+    assert abs(_probe_duration(out) - expected_frames / 30) < 0.05

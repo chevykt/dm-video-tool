@@ -2,7 +2,8 @@
 from pathlib import Path
 
 from config import Config
-from pipeline.ffmpeg_cmd import build_clips_for_scene, build_concat_cmd, concat_list_text
+from pipeline.audio import build_track
+from pipeline.ffmpeg_cmd import build_clips_for_scene, build_concat_cmd, build_mux_cmd, concat_list_text
 from pipeline.runner import ensure_ffmpeg, run
 
 
@@ -24,4 +25,14 @@ def render_silent(scenes, cfg: Config, workdir: Path, out_path: Path,
     list_file = workdir / "list.txt"
     list_file.write_text(concat_list_text(clips), encoding="utf-8")
     run(build_concat_cmd(list_file, out_path))
+    return out_path
+
+
+def render(scenes, cfg: Config, workdir: Path, out_path: Path,
+           progress=None) -> Path:
+    """Full render: silent video, prepared audio track, muxed together."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    silent = render_silent(scenes, cfg, workdir, workdir / "silent.mp4", progress)
+    track = build_track(scenes, cfg, workdir / "track.wav")
+    run(build_mux_cmd(silent, track, out_path))
     return out_path
