@@ -86,6 +86,7 @@ if zips and csv_file and st.button("Load scenes"):
     st.session_state.scenes = scenes
     st.session_state.overrides = {}
     st.session_state.editor_version = st.session_state.get("editor_version", 0) + 1
+    st.session_state.rendered = None  # a freshly loaded conversation has no render yet
 
 if "scenes" in st.session_state:
     scenes = st.session_state.scenes
@@ -143,6 +144,9 @@ if "scenes" in st.session_state:
     if st.button("Render video", type="primary"):
         work = Path(st.session_state.work)
         out = work / "final.mp4"
+        # Clear any previous result now, so a failed render never leaves a
+        # stale video on screen looking like it belongs to this attempt.
+        st.session_state.rendered = None
         bar = st.progress(0.0, text="Rendering scenes")
         try:
             with st.spinner("Rendering"):
@@ -154,7 +158,16 @@ if "scenes" in st.session_state:
             st.stop()
 
         bar.empty()
+        st.session_state.rendered = str(out)
+
+    # Rendered outside the button block so it survives reruns that aren't a
+    # fresh click of Render video: st.download_button itself triggers a
+    # rerun, and so do the sliders and table edits above. It stays on screen
+    # until the next successful render replaces it or Load scenes clears it.
+    rendered = st.session_state.get("rendered")
+    if rendered and Path(rendered).exists():
         st.success("Done")
-        st.video(str(out))
-        st.download_button("Download mp4", out.read_bytes(), file_name="conversation.mp4",
-                           mime="video/mp4")
+        st.caption("Last render. Press Render video again after changing settings.")
+        st.video(rendered)
+        st.download_button("Download mp4", Path(rendered).read_bytes(),
+                           file_name="conversation.mp4", mime="video/mp4")

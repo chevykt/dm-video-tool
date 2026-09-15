@@ -130,3 +130,47 @@ def test_render_video_produces_no_error_and_a_video_player(tmp_path):
     assert not at.error
     assert len(at.success) >= 1
     assert len(at.get("video")) >= 1
+
+    rendered_path = Path(at.session_state["rendered"])
+    assert rendered_path.exists()
+    mtime_after_render = rendered_path.stat().st_mtime
+
+    # A rerun that is NOT a fresh click of Render video -- this is what
+    # st.download_button's own click does, and what moving a slider or
+    # editing the table does too. The result must stay on screen, and
+    # FFmpeg must not have run again.
+    at.run()
+
+    assert not at.exception
+    assert not at.error
+    assert len(at.success) >= 1
+    assert len(at.get("video")) >= 1
+    assert rendered_path.stat().st_mtime == mtime_after_render
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or not Config().music_path or not Path(Config().music_path).exists(),
+    reason="FFmpeg and/or the background music file are not available",
+)
+def test_loading_scenes_again_clears_the_previous_render(tmp_path):
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    assert not at.exception and not at.error
+
+    render_button = next(b for b in at.button if b.label == "Render video")
+    render_button.click()
+    at.run()
+    assert at.session_state["rendered"]
+    assert len(at.get("video")) >= 1
+
+    # Load the same conversation again -- the previous render must not
+    # linger and be mistaken for a render of the settings now in effect.
+    load_button = next(b for b in at.button if b.label == "Load scenes")
+    load_button.click()
+    at.run()
+
+    assert not at.exception and not at.error
+    assert at.session_state["rendered"] is None
+    assert len(at.get("video")) == 0
+    assert len(at.success) == 0
