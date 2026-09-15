@@ -10,6 +10,7 @@ from pydub.generators import Sine
 from config import Config
 from pipeline.render import render, render_silent
 from pipeline.scenes import Scene
+from pipeline.timing import frames_for
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None,
                                 reason="FFmpeg not installed")
@@ -151,3 +152,45 @@ def test_render_muxes_exactly_one_video_and_one_audio_stream(tmp_path):
     expected_frames = 61 + 45 + 100
     assert _probe_packet_count(out) == expected_frames
     assert abs(_probe_duration(out) - expected_frames / 30) < 0.05
+
+
+def test_animated_clips_concat_with_plain_ones(tmp_path):
+    # Plain, zoom, shake and plain again, so animated clips sit in the
+    # middle of the concat list, not just at the edges.
+    durations = [1.0, 1.0, 1.0, 0.51]
+    heights = [340, 520, 410, 480]
+    flags = [{}, {"zoom": True}, {"shake": True}, {}]
+
+    def _scenes(tag):
+        scenes = []
+        for i, (h, dur, flag) in enumerate(zip(heights, durations, flags), start=1):
+            img = tmp_path / f"{tag}_conversation_{i}.png"
+            _make_png(img, 1200, h)
+            scenes.append(Scene(id=i, image_path=img, text="x", speaker="Mina",
+                                duration=dur, **flag))
+        return scenes
+
+    expected_frames = sum(frames_for(d, 30) for d in durations)
+    assert expected_frames == 105
+
+    # Animated zoom mode
+    out = render_silent(_scenes("animated"), Config(), tmp_path / "work_animated",
+                         tmp_path / "animated.mp4")
+    assert out.exists()
+    assert _probe_packet_count(out) == expected_frames
+    stream = _probe_stream(out)
+    assert stream["width"] == 1920
+    assert stream["height"] == 1080
+    assert stream["r_frame_rate"] == "30/1"
+    assert stream["pix_fmt"] == "yuv420p"
+
+    # Punch-in fallback mode
+    out2 = render_silent(_scenes("punch"), Config(zoom_mode="punch"),
+                          tmp_path / "work_punch", tmp_path / "punch.mp4")
+    assert out2.exists()
+    assert _probe_packet_count(out2) == expected_frames
+    stream2 = _probe_stream(out2)
+    assert stream2["width"] == 1920
+    assert stream2["height"] == 1080
+    assert stream2["r_frame_rate"] == "30/1"
+    assert stream2["pix_fmt"] == "yuv420p"
