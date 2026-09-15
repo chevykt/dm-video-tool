@@ -90,5 +90,6 @@ that call and the HTML in `buildHtml()`.
 Run the tests with the project's virtual environment:
 
 ```
-.venv\Scripts\python -m pytest tests/
+.venv\Scripts\python -m pytest tests/     # Windows
+.venv/bin/python -m pytest tests/         # macOS
 ```

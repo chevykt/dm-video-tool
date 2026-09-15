@@ -12,8 +12,19 @@ goto havepy
 set PYCMD=python
 
 :havepy
-REM First run only: create the virtual environment if it does not exist yet.
-if exist ".venv\Scripts\python.exe" goto havevenv
+REM If a virtual environment already exists, make sure it still actually
+REM runs before trusting it: the base Python may have been updated or
+REM removed since it was created, or the folder may have been moved.
+if not exist ".venv\Scripts\python.exe" goto makevenv
+".venv\Scripts\python.exe" -c "import sys" >nul 2>nul
+if errorlevel 1 goto brokenvenv
+goto havevenv
+
+:brokenvenv
+echo The app's Python setup is broken (Python may have been updated). Rebuilding it...
+rmdir /s /q ".venv"
+
+:makevenv
 echo First run: setting things up, this takes a few minutes...
 %PYCMD% -m venv .venv
 if errorlevel 1 goto novenv
