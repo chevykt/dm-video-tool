@@ -3,7 +3,7 @@ import pytest
 import zipfile
 from pathlib import Path
 from config import Config
-from pipeline.scenes import scene_id_from_filename, build_scenes, extract_zips
+from pipeline.scenes import scene_id_from_filename, build_scenes, extract_zips, Scene, retime
 
 CFG = Config()
 
@@ -177,3 +177,15 @@ def test_macos_resource_fork_entries_are_skipped(tmp_path):
 
     names = sorted(p.name for p in paths)
     assert names == ["conversation_1.png"]
+
+
+def test_retime_recomputes_from_the_rule_but_keeps_hand_set_durations():
+    scenes = [
+        Scene(id=1, image_path=Path("conversation_1.png"), text="coin says no",
+              speaker="Mina", duration=9.0),
+        Scene(id=2, image_path=Path("conversation_2.png"), text="coin says no",
+              speaker="Mina", duration=9.0),
+    ]
+    retime(scenes, Config(speed=2.0), overrides={2: 4.5})
+    assert scenes[0].duration == pytest.approx(1.01)
+    assert scenes[1].duration == 4.5

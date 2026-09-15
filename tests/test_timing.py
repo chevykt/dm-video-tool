@@ -39,3 +39,18 @@ def test_frames_for_rounds_to_the_nearest_whole_frame():
     assert frames_for(3.34, 30) == 100
     assert frames_for(2.333, 30) == 70
     assert frames_for(0.01, 30) == 1
+
+
+def test_speed_scales_every_duration_including_the_clamps():
+    fast = Config(speed=2.0)
+    # word rule: 2.02 -> 1.01
+    assert duration_for("coin says no", fast) == pytest.approx(1.01)
+    # ceiling: 7.0 -> 3.5
+    assert duration_for("word " * 40, fast) == pytest.approx(CFG.max_duration / 2)
+    # floor: 1.2 -> 0.6
+    assert duration_for("hi", Config(base=0.2, per_word=0.1, speed=2.0)) == pytest.approx(0.6)
+
+
+def test_default_speed_leaves_the_approved_pacing_alone():
+    assert Config().speed == 1.0
+    assert round(duration_for("coin says no", CFG), 2) == 2.02

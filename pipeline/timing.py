@@ -11,7 +11,10 @@ def duration_for(text: str, cfg: Config) -> float:
     chars = len(text)
     by_word = cfg.base + cfg.per_word * words
     by_char = cfg.base + chars / cfg.chars_per_sec
-    return min(max(by_word, by_char, cfg.min_duration), cfg.max_duration)
+    clamped = min(max(by_word, by_char, cfg.min_duration), cfg.max_duration)
+    # Dividing after the clamp scales every scene by the same factor, so the
+    # total runtime scales by exactly 1 / speed.
+    return clamped / cfg.speed
 
 
 def frames_for(duration: float, fps: int) -> int:

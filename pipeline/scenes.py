@@ -134,3 +134,9 @@ def build_scenes(image_paths: list[Path], csv_path: Path, cfg: Config) -> list[S
             )
         )
     return scenes
+
+
+def retime(scenes, cfg: Config, overrides: dict[int, float]) -> None:
+    """Recompute every scene's duration from the rule, keeping hand-set ones."""
+    for scene in scenes:
+        scene.duration = overrides.get(scene.id, duration_for(scene.text, cfg))

@@ -1,0 +1,9 @@
+[server]
+maxUploadSize = 500
+# Skip the "enter your email" prompt Streamlit shows on first launch, which
+# would otherwise block a non-technical client before they see the app.
+showEmailPrompt = false
+
+[browser]
+# Usage stats are off by default for this local, client-run tool.
+gatherUsageStats = false

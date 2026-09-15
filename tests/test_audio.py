@@ -69,3 +69,30 @@ def test_missing_music_file_raises_instead_of_silently_skipping(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="missing.mp3"):
         build_track(_scenes(2.0, 2.0), cfg, tmp_path / "track.wav")
+
+
+def test_gains_change_the_level_of_their_own_layer(tmp_path):
+    from pydub import AudioSegment
+    from pydub.generators import Sine
+    from pipeline.audio import build_track
+
+    sfx_dir = tmp_path / "sfx"
+    sfx_dir.mkdir()
+    Sine(1000).to_audio_segment(duration=200).export(sfx_dir / "pop.wav", format="wav")
+    music = tmp_path / "music.wav"
+    Sine(300).to_audio_segment(duration=3000).export(music, format="wav")
+    scenes = [Scene(id=i, image_path=Path(f"conversation_{i}.png"), text="x",
+                    speaker="Mina", duration=1.0) for i in (1, 2)]
+
+    def track(sfx_db, music_db, with_music):
+        out = tmp_path / f"track_{sfx_db}_{music_db}_{with_music}.wav"
+        cfg = Config(sfx_dir=sfx_dir, music_path=music if with_music else None,
+                     sfx_gain_db=sfx_db, music_gain_db=music_db)
+        return AudioSegment.from_file(build_track(scenes, cfg, out))
+
+    # SFX on its own (no music): the second SFX plays at 1000-1200ms
+    sfx_drop = track(0.0, -18.0, False)[1000:1200].dBFS - track(-12.0, -18.0, False)[1000:1200].dBFS
+    assert sfx_drop == pytest.approx(12.0, abs=0.5)
+    # music on its own, between the SFX (which play at 0-200ms and 1000-1200ms)
+    music_rise = track(-3.0, -10.0, True)[400:900].dBFS - track(-3.0, -30.0, True)[400:900].dBFS
+    assert music_rise == pytest.approx(20.0, abs=0.5)

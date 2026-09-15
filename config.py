@@ -17,6 +17,7 @@ class Config:
     chars_per_sec: float = 17.0
     min_duration: float = 1.2
     max_duration: float = 7.0
+    speed: float = 1.0               # overall pace; 1.2 plays every message 20% faster
 
     # zoom
     zoom_mode: str = "animated"      # "animated" or "punch"
