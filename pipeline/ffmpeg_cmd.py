@@ -45,6 +45,8 @@ def shake_filter(cfg: Config) -> str:
 
 
 def scene_filter(scene: Scene, cfg: Config) -> str:
+    # Precedence when a scene is flagged both zoom and shake: zoom wins (here,
+    # and via the punch split in build_clips_for_scene for zoom_mode "punch").
     if scene.zoom and cfg.zoom_mode == "animated":
         return zoom_filter(scene, cfg)
     if scene.shake:
@@ -74,11 +76,17 @@ def build_scene_clip_cmd(scene: Scene, cfg: Config, out_path: Path,
 def build_clips_for_scene(scene: Scene, cfg: Config, clips_dir: Path) -> list[tuple[list[str], Path]]:
     """Most scenes are one clip. Punch-in zoom is two."""
     if scene.zoom and cfg.zoom_mode == "punch":
+        total = frames_for(scene.duration, cfg.fps)
+        if total < 2:
+            # Too short to split into two >=1-frame clips; render as a single
+            # clip instead, same as a non-zoom scene (scene_filter's plain
+            # composite is what a punch-mode zoom scene renders as anyway).
+            out = clips_dir / f"scene_{scene.id:05d}.mp4"
+            return [(build_scene_clip_cmd(scene, cfg, out), out)]
         # Split in whole frames so the two clips add up to exactly the frames
         # the audio offsets assume for this scene.
-        total = frames_for(scene.duration, cfg.fps)
-        head_frames = max(1, round(total * cfg.punch_split))
-        tail_frames = max(1, total - head_frames)
+        head_frames = min(max(1, round(total * cfg.punch_split)), total - 1)
+        tail_frames = total - head_frames
         head = replace(scene, duration=head_frames / cfg.fps, zoom=False)
         tail = replace(scene, duration=tail_frames / cfg.fps, zoom=False)
         pa = clips_dir / f"scene_{scene.id:05d}a.mp4"

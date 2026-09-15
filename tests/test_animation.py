@@ -62,3 +62,18 @@ def test_punch_split_never_loses_or_gains_a_frame():
     clips = build_clips_for_scene(_scene(zoom=True, duration=2.02), cfg, Path("/tmp"))
     frames = [int(cmd[cmd.index("-frames:v") + 1]) for cmd, _ in clips]
     assert sum(frames) == 61      # frames_for(2.02, 30)
+
+
+def test_punch_split_of_a_two_frame_scene_is_one_and_one():
+    cfg = Config(zoom_mode="punch")
+    clips = build_clips_for_scene(_scene(zoom=True, duration=2 / 30), cfg, Path("/tmp"))
+    frames = [int(cmd[cmd.index("-frames:v") + 1]) for cmd, _ in clips]
+    assert frames == [1, 1]
+
+
+def test_punch_mode_leaves_a_one_frame_scene_as_a_single_clip():
+    cfg = Config(zoom_mode="punch")
+    clips = build_clips_for_scene(_scene(zoom=True, duration=1 / 30), cfg, Path("/tmp"))
+    assert len(clips) == 1
+    cmd, _ = clips[0]
+    assert cmd[cmd.index("-frames:v") + 1] == "1"
