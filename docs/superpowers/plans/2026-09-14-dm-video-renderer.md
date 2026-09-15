@@ -962,6 +962,19 @@ def test_punch_split_never_loses_or_gains_a_frame():
     clips = build_clips_for_scene(_scene(zoom=True, duration=2.02), cfg, Path("/tmp"))
     frames = [int(cmd[cmd.index("-frames:v") + 1]) for cmd, _ in clips]
     assert sum(frames) == 61      # frames_for(2.02, 30)
+
+
+def test_punch_split_of_a_two_frame_scene_is_one_and_one():
+    cfg = Config(zoom_mode="punch")
+    clips = build_clips_for_scene(_scene(zoom=True, duration=2 / 30), cfg, Path("/tmp"))
+    assert [int(cmd[cmd.index("-frames:v") + 1]) for cmd, _ in clips] == [1, 1]
+
+
+def test_punch_mode_leaves_a_one_frame_scene_as_a_single_clip():
+    cfg = Config(zoom_mode="punch")
+    clips = build_clips_for_scene(_scene(zoom=True, duration=1 / 30), cfg, Path("/tmp"))
+    assert len(clips) == 1
+    assert clips[0][0][clips[0][0].index("-frames:v") + 1] == "1"
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
@@ -1019,8 +1032,11 @@ def build_clips_for_scene(scene: Scene, cfg: Config, clips_dir: Path):
         # Split in whole frames so the two clips add up to exactly the frames
         # the audio offsets assume for this scene.
         total = frames_for(scene.duration, cfg.fps)
-        head_frames = max(1, round(total * cfg.punch_split))
-        tail_frames = max(1, total - head_frames)
+        if total < 2:  # too short to split: one plain clip keeps the frame count exact
+            out = clips_dir / f"scene_{scene.id:05d}.mp4"
+            return [(build_scene_clip_cmd(scene, cfg, out), out)]
+        head_frames = min(max(1, round(total * cfg.punch_split)), total - 1)
+        tail_frames = total - head_frames
         head = replace(scene, duration=head_frames / cfg.fps, zoom=False)
         tail = replace(scene, duration=tail_frames / cfg.fps, zoom=False)
         pa = clips_dir / f"scene_{scene.id:05d}a.mp4"
@@ -1036,7 +1052,7 @@ def build_clips_for_scene(scene: Scene, cfg: Config, clips_dir: Path):
 - [ ] **Step 4: Run the suite and confirm concat still works**
 
 Run: `pytest tests/ -v`
-Expected: everything passes, including the 5 new animation tests
+Expected: everything passes, including the 7 new animation tests
 
 Then render a real conversation with two or three scenes flagged, and confirm with `ffprobe` that the total frame count still equals the sum of `frames_for` over all scenes. **If concat starts failing here, the animated clip settings drifted from the plain ones. Fix the settings, never the concat.**
 
