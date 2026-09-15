@@ -207,7 +207,10 @@ Scene state lives in `st.session_state`, or edits are wiped on every rerun. `ser
 - An **Advanced timing rules** section with the five rule values under plain labels: pause before reading (`base`), seconds per word (`per_word`), reading speed (`chars_per_sec`), shortest time on screen (`min_duration`), longest time on screen (`max_duration`).
 - **Hand edits win.** Moving any control recalculates every scene's duration from the rule, except scenes whose duration was typed into the table by hand. Those keep their value and are marked as hand-set. A **Reset all to the rule** button clears every hand-set duration.
 - Controls start at the `config.py` defaults each session. Nothing is saved; changing the defaults is still an edit to `config.py`.
-- Table edits are reconciled by scene id into a canonical state in `st.session_state`, and the editor's key is bumped after each edit. That stops stale editor edits being re-applied over durations the sliders have just recalculated.
+- Table edits are reconciled by scene id into a canonical state in `st.session_state`. The editor's key is bumped only after a **duration** edit, which stops a stale typed duration being re-applied over values the sliders have just recalculated. Zoom, shake and sfx edits stay as widget edits, so ticking a box does not scroll the table back to the top. (Amended 2026-09-15 after the final review; bumping after every edit made the grid jump.)
+- The zoom, shake and sfx columns are required, so a cleared cell (Delete) is ignored rather than corrupting the table. A failure inside the table editor resets it instead of breaking the page.
+- While a render runs, every control is disabled, because any interaction would otherwise make Streamlit stop the render silently. Streamlit's own Rerun command (the R key, or the page menu) cannot be disabled and would still cancel it.
+- Temporary work folders are deleted when a new conversation is loaded, after a successful render (keeping only the final video), and at start-up for leftovers older than a day.
 
 **Volume controls.**
 - **Sound effect volume** slider, -30 to +6 dB, and **Music volume** slider, -40 to 0 dB. Both are labelled in dB, where 0 dB means the file's own level.
@@ -224,6 +227,11 @@ Three failures get explicit treatment. Everything else may raise.
 | FFmpeg not on PATH | Caught at app start with an OS-specific install hint, not mid-render |
 | Image ids and CSV ids disagree | Hard failure naming the unmatched ids on both sides. Silent misalignment is the worst outcome this tool can produce |
 | FFmpeg exits non-zero | Surface the last 20 lines of stderr in the UI, not a stack trace |
+
+**Amended 2026-09-15 (final review, before handing the app to non-technical editors).** "Everything else may raise" no longer means a raw traceback in the editor's browser:
+- These now each show a readable message: FFmpeg or ffprobe missing, a damaged or incomplete zip, an empty load, the wrong sheet tab or missing columns, duplicate images, an unexpected filename, and a missing music or sound effect file.
+- Anything unanticipated shows a plain "something went wrong, send Keon a screenshot" message, with the technical details folded into an expander.
+- Missing music or sound files are caught before any clips render, because the audio track is now built first, not after a minute of rendering.
 
 ## 12. Testing
 

@@ -6,7 +6,7 @@
 
 **Architecture:** Pure-logic core, thin execution layer, swappable interface. Every FFmpeg command is produced by a pure function returning an argv list, so filter strings are unit-testable without FFmpeg. Each scene renders to its own short mp4 with identical encoder settings; clips concat with `-c copy`; one prepared audio track is muxed at the end.
 
-**Tech Stack:** Python 3.11+, FFmpeg (system binary), pydub, Streamlit, pytest.
+**Tech Stack:** Python 3.12–3.14 (amended 2026-09-15: the pinned numpy 2.5.3 needs 3.12+; the launchers check the range), FFmpeg (system binary), pydub, Streamlit, pytest. Exact tested versions are pinned in `requirements.txt` + `constraints.txt`; `pytest` lives in `requirements-dev.txt`.
 
 **Spec:** `docs/superpowers/specs/2026-09-14-dm-video-renderer-design.md`
 
@@ -1084,6 +1084,18 @@ Render both `zoom_mode` values and show the client each. Too much or too little 
   - Nothing else consumed by later tasks
 
 Timing controls were requested by the client on 2026-09-15, after they approved the stage 1 pacing. See spec §2 item 8 and §10 "Timing controls". The rule logic stays in `pipeline/` and is unit tested; `app.py` only reads sliders and builds a `Config`.
+
+**Amended 2026-09-15 after the final whole-branch review (commits 1b6e9dc..3454603):**
+- The table's zoom, shake and sfx columns are required, so Delete can't clear them, and a failure inside the editor resets it.
+- The editor key is bumped only on duration edits, and the column order puts id, zoom, shake, sfx and seconds before message.
+- Every control is disabled while a render runs.
+- Temporary work folders are cleaned up.
+- `render()` builds the audio track before the clips.
+- A read-only `words` column is added.
+- A shared `table_edits.scene_table()` builds the table for both the app and its tests.
+- Friendly messages cover damaged zips, empty loads, same-name zips and a missing ffprobe, and a catch-all handles anything else.
+- The launchers check the Python version (3.12–3.14), and the tested package versions are pinned.
+- The README covers a non-technical Mac or Windows user.
 
 **Amended 2026-09-15 after the Task 8 review.** The code below shows the success message, video and download button only inside `if st.button("Render video")`, so the rerun caused by the download itself wipes them. As built, the last render's path is kept in `st.session_state` and shown outside the button block, labelled as the last render, until the next Render or Load. The edit-reconciliation loop lives in `table_edits.apply_table_edits` (unit tested, no streamlit import), `st.data_editor` uses `width="stretch"`, and `.streamlit/config.toml` also turns off the first-run email prompt and usage stats. The repo is authoritative over the code below.
 
