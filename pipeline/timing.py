@@ -12,3 +12,12 @@ def duration_for(text: str, cfg: Config) -> float:
     by_word = cfg.base + cfg.per_word * words
     by_char = cfg.base + chars / cfg.chars_per_sec
     return min(max(by_word, by_char, cfg.min_duration), cfg.max_duration)
+
+
+def frames_for(duration: float, fps: int) -> int:
+    """Whole frames a scene occupies on screen.
+
+    Video clips and audio offsets are both derived from this one number, so
+    they cannot drift apart however many scenes there are.
+    """
+    return max(1, round(duration * fps))

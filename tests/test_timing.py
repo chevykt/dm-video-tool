@@ -1,6 +1,6 @@
 import pytest
 from config import Config
-from pipeline.timing import duration_for
+from pipeline.timing import duration_for, frames_for
 
 CFG = Config()
 
@@ -26,3 +26,12 @@ def test_very_long_message_hits_the_ceiling():
 def test_floor_applies_when_config_is_tuned_down():
     cfg = Config(base=0.2, per_word=0.1)
     assert duration_for("hi", cfg) == cfg.min_duration
+
+
+def test_frames_for_rounds_to_the_nearest_whole_frame():
+    assert frames_for(2.0, 30) == 60
+    assert frames_for(2.02, 30) == 61
+    assert frames_for(1.529, 30) == 46
+    assert frames_for(2.067, 30) == 62
+    assert frames_for(2.333, 30) == 70
+    assert frames_for(0.01, 30) == 1

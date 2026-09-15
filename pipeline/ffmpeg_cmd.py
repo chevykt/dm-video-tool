@@ -2,6 +2,7 @@ from pathlib import Path
 
 from config import Config
 from pipeline.scenes import Scene
+from pipeline.timing import frames_for
 
 
 def composite_filter(cfg: Config) -> str:
@@ -23,7 +24,7 @@ def build_scene_clip_cmd(scene: Scene, cfg: Config, out_path: Path,
         "ffmpeg", "-y",
         "-loop", "1",
         "-i", str(scene.image_path),
-        "-t", f"{scene.duration:.3f}",
+        "-frames:v", str(frames_for(scene.duration, cfg.fps)),
         "-vf", filter_override or scene_filter(scene, cfg),
         "-r", str(cfg.fps),
         "-c:v", "libx264",
