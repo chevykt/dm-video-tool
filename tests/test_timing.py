@@ -33,5 +33,9 @@ def test_frames_for_rounds_to_the_nearest_whole_frame():
     assert frames_for(2.02, 30) == 61
     assert frames_for(1.529, 30) == 46
     assert frames_for(2.067, 30) == 62
+    # durations where the old `-t` rounding over-counted by a whole frame on
+    # FFmpeg 9.0.1 (46 and 101 frames instead of the correct 45/100)
+    assert frames_for(1.51, 30) == 45
+    assert frames_for(3.34, 30) == 100
     assert frames_for(2.333, 30) == 70
     assert frames_for(0.01, 30) == 1

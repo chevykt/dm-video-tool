@@ -86,7 +86,10 @@ def _probe_packet_count(path: Path) -> int:
 def test_render_length_is_an_exact_whole_number_of_frames(tmp_path):
     cfg = Config()
     scenes = []
-    durations = [2.02, 1.529, 2.067]
+    # 1.51 and 3.34 are where the old `-t` rounding over-counts by a whole
+    # frame on FFmpeg 9.0.1 (46 and 101 frames instead of round()'s 45/100),
+    # so this set of durations is what actually discriminates old vs new.
+    durations = [2.02, 1.51, 3.34]
     for i, (h, dur) in enumerate(zip([340, 520, 410], durations), start=1):
         img = tmp_path / f"conversation_{i}.png"
         _make_png(img, 1200, h)
@@ -95,7 +98,7 @@ def test_render_length_is_an_exact_whole_number_of_frames(tmp_path):
 
     out = render_silent(scenes, cfg, tmp_path / "work", tmp_path / "silent.mp4")
 
-    expected_frames = 61 + 46 + 62
+    expected_frames = 61 + 45 + 100
     assert _probe_packet_count(out) == expected_frames
     assert abs(_probe_duration(out) - expected_frames / 30) < 0.01
 
