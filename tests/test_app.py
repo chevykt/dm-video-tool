@@ -6,6 +6,7 @@ the same way test_smoke.py builds its PNGs (ffmpeg lavfi, since Pillow is
 not installed).
 """
 import csv
+import json
 import re
 import shutil
 import tempfile
@@ -13,6 +14,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import streamlit
 from streamlit.testing.v1 import AppTest
 
 from config import Config
@@ -91,6 +93,91 @@ def test_loading_a_conversation_shows_the_scene_table(tmp_path):
 
     assert len(at.caption) == 1
     assert "3 scenes" in at.caption[0].value
+
+
+def _editor_proto(at):
+    """The scene table's element proto (AppTest cannot drive st.data_editor,
+    but it can read what app.py asked the browser to show)."""
+    frames = at.get("dataframe")
+    assert len(frames) == 1
+    return frames[0].proto
+
+
+def test_zoom_shake_and_sfx_cells_cannot_be_cleared(tmp_path):
+    # Pressing Delete on a cell sets it to None. For zoom/shake that crashed
+    # st.data_editor for the rest of the session; for sfx it became the
+    # preset "nan". A required column makes the grid ignore Delete.
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    assert not at.exception and not at.error
+
+    columns = json.loads(_editor_proto(at).columns)
+    for name in ("zoom", "shake"):
+        assert columns[name]["type_config"]["type"] == "checkbox"
+        assert columns[name]["required"] is True
+    assert columns["sfx"]["type_config"]["type"] == "selectbox"
+    assert columns["sfx"]["required"] is True
+
+
+def test_the_choices_come_before_the_message_in_the_table(tmp_path):
+    # zoom/shake/sfx used to be the right-most columns, off-screen on a
+    # laptop. The word count is shown but cannot be edited.
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    assert not at.exception and not at.error
+
+    proto = _editor_proto(at)
+    order = list(proto.column_order)
+    assert order[:5] == ["id", "zoom", "shake", "sfx", "seconds"]
+    assert order.index("message") > order.index("seconds")
+    assert "words" in order
+    assert json.loads(proto.columns)["words"]["disabled"] is True
+
+
+def test_a_broken_table_state_resets_the_table_instead_of_crashing(tmp_path, monkeypatch):
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    assert not at.exception and not at.error
+    version = at.session_state["editor_version"]
+
+    # What a bad edit persisted in the editor's widget state does: the
+    # editor itself raises on every rerun until that state is dropped.
+    real_editor = streamlit.data_editor
+    calls = []
+
+    def editor_with_bad_state(*args, **kwargs):
+        calls.append(kwargs.get("key"))
+        if len(calls) == 1:
+            raise TypeError("Invalid value 'nan' for dtype 'bool'")
+        return real_editor(*args, **kwargs)
+
+    monkeypatch.setattr(streamlit, "data_editor", editor_with_bad_state)
+    at.run()
+
+    assert not at.exception and not at.error
+    assert at.session_state["editor_version"] == version + 1
+    assert calls[1] != calls[0]  # the retry used a fresh editor key
+    assert len(at.get("dataframe")) == 1
+    assert any(b.label == "Render video" for b in at.button)
+
+
+def test_a_table_that_keeps_failing_shows_a_message_instead_of_looping(tmp_path, monkeypatch):
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    assert not at.exception and not at.error
+
+    def broken_editor(*args, **kwargs):
+        raise TypeError("still broken")
+
+    monkeypatch.setattr(streamlit, "data_editor", broken_editor)
+    at.run()
+
+    assert len(at.error) == 1
+    assert "send Keon a screenshot" in at.error[0].value
 
 
 def test_overall_speed_slider_shortens_the_runtime(tmp_path):

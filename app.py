@@ -3,7 +3,6 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-import pandas as pd
 import streamlit as st
 
 from config import Config
@@ -12,7 +11,7 @@ from pipeline.render import render
 from pipeline.runner import FFmpegFailed, FFmpegMissing, ensure_ffmpeg
 from pipeline.scenes import build_scenes, extract_zips, retime
 from pipeline.timing import frames_for
-from table_edits import apply_table_edits
+from table_edits import apply_table_edits, scene_table
 
 st.set_page_config(page_title="DM Video Renderer", layout="wide")
 st.title("DM Video Renderer")
@@ -25,11 +24,21 @@ except FFmpegMissing as e:
 
 DEFAULTS = Config()
 SFX_CHOICES = DEFAULTS.sfx_choices()
+TABLE_ORDER = ["id", "zoom", "shake", "sfx", "seconds", "hand-set", "words",
+               "speaker", "message"]
 
 
 def _runtime(seconds: float) -> str:
     s = int(round(seconds))
     return f"{s // 60}m {s % 60:02d}s"
+
+
+def _show_unexpected(e: BaseException) -> None:
+    """Anything without its own message: a plain line for the client, and
+    the details folded away for whoever debugs it."""
+    st.error("Something went wrong — send Keon a screenshot of this.")
+    with st.expander("Details"):
+        st.exception(e)
 
 
 # Timing controls. Slider values live only for this session; config.py holds
@@ -98,31 +107,47 @@ if "scenes" in st.session_state:
     st.caption(f"{len(scenes)} scenes, {_runtime(total)}"
                + (f", {len(overrides)} set by hand" if overrides else ""))
 
-    table = pd.DataFrame([
-        {"id": s.id, "speaker": s.speaker, "message": s.text[:60],
-         "seconds": round(s.duration, 2), "hand-set": s.id in overrides,
-         "zoom": s.zoom, "shake": s.shake, "sfx": s.sfx}
-        for s in scenes
-    ])
-    edited = st.data_editor(
-        table,
-        disabled=["id", "speaker", "message", "hand-set"],
-        column_config={
-            "seconds": st.column_config.NumberColumn(min_value=0.2, max_value=30.0,
-                                                     step=0.05, format="%.2f"),
-            "sfx": st.column_config.SelectboxColumn(options=SFX_CHOICES),
-        },
-        hide_index=True,
-        width="stretch",
-        # A fresh key after every reconciled edit, so the editor never re-applies
-        # a stale edit on top of durations the sliders have just recalculated.
-        key=f"editor_{st.session_state.editor_version}",
-    )
+    table = scene_table(scenes, overrides)
+    try:
+        edited = st.data_editor(
+            table,
+            disabled=["id", "speaker", "message", "words", "hand-set"],
+            # The choices first, so they are on screen at laptop widths.
+            column_order=TABLE_ORDER,
+            column_config={
+                "seconds": st.column_config.NumberColumn(min_value=0.2, max_value=30.0,
+                                                         step=0.05, format="%.2f"),
+                # required: the grid ignores Delete on these cells. A cleared
+                # tick box crashes st.data_editor under pandas 3, and a cleared
+                # preset would become a sound called "nan".
+                "zoom": st.column_config.CheckboxColumn(required=True),
+                "shake": st.column_config.CheckboxColumn(required=True),
+                "sfx": st.column_config.SelectboxColumn(options=SFX_CHOICES, required=True),
+            },
+            hide_index=True,
+            width="stretch",
+            key=f"editor_{st.session_state.editor_version}",
+        )
+    except Exception as e:
+        # A bad edit is kept in the editor's widget state under its key and
+        # raises again on every rerun. Drop it with a fresh editor, once; if
+        # the fresh one fails too, say so rather than retrying forever.
+        if st.session_state.get("editor_reset") == st.session_state.editor_version:
+            _show_unexpected(e)
+            st.stop()
+        st.session_state.editor_version += 1
+        st.session_state.editor_reset = st.session_state.editor_version
+        st.rerun()
 
     # Fold edits into the canonical state. Match by id, never by row position:
     # the table can be sorted in the UI. The comparison logic itself lives in
     # table_edits.py so it can be unit tested without a Streamlit runtime.
-    if apply_table_edits(scenes, overrides, table, edited):
+    changes = apply_table_edits(scenes, overrides, table, edited)
+    if changes.durations:
+        # A typed duration gets a fresh editor key, so the editor never
+        # re-applies it on top of durations the sliders recalculate later.
+        # Ticks and presets keep the same editor: remounting it would jump
+        # the grid back to the top-left after every click.
         st.session_state.editor_version += 1
         st.rerun()
 
