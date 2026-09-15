@@ -1058,16 +1058,18 @@ Render both `zoom_mode` values and show the client each. Too much or too little 
 **Files:**
 - Create: `app.py`, `.streamlit/config.toml`
 - Modify: `config.py` (add `speed`), `pipeline/timing.py` (apply `speed`), `pipeline/scenes.py` (add `retime`)
-- Test: `tests/test_timing.py`, `tests/test_scenes.py`
+- Test: `tests/test_timing.py`, `tests/test_scenes.py`, `tests/test_audio.py`
 
 **Interfaces:**
-- Consumes: `extract_zips`, `build_scenes` (Task 3), `render` (Task 6), `Config` (Task 1), `duration_for` (Task 2)
+- Consumes: `extract_zips`, `build_scenes` (Task 3), `render`, `build_track` (Task 6), `Config` (Task 1), `duration_for` (Task 2)
 - Produces:
   - `Config.speed: float = 1.0`, applied by `duration_for` as a final divide
   - `retime(scenes, cfg, overrides: dict[int, float]) -> None`
   - Nothing else consumed by later tasks
 
 Timing controls were requested by the client on 2026-09-15, after they approved the stage 1 pacing. See spec §2 item 8 and §10 "Timing controls". The rule logic stays in `pipeline/` and is unit tested; `app.py` only reads sliders and builds a `Config`.
+
+Volume controls were requested on 2026-09-15 during the stage 2 review. See spec §2 item 9 and §10 "Volume controls". `build_track` has read `sfx_gain_db` and `music_gain_db` since Task 6, so no pipeline change is needed: the sliders set the two values on the `Config`, and **Preview audio mix** calls `build_track` on the first 20 scenes.
 
 - [ ] **Step 1: Raise the upload limit**
 
@@ -1112,8 +1114,40 @@ def test_retime_recomputes_from_the_rule_but_keeps_hand_set_durations():
     assert scenes[1].duration == 4.5
 ```
 
-Run: `pytest tests/test_timing.py tests/test_scenes.py -v`
-Expected: FAIL. `Config` has no `speed` field, and `retime` does not exist.
+Append to `tests/test_audio.py`. This guards the volume sliders: it proves each gain moves only its own part of the mix, by the number of dB set.
+
+```python
+def test_gains_change_the_level_of_their_own_layer(tmp_path):
+    from pydub import AudioSegment
+    from pydub.generators import Sine
+    from pipeline.audio import build_track
+
+    sfx_dir = tmp_path / "sfx"
+    sfx_dir.mkdir()
+    Sine(1000).to_audio_segment(duration=200).export(sfx_dir / "pop.wav", format="wav")
+    music = tmp_path / "music.wav"
+    Sine(300).to_audio_segment(duration=3000).export(music, format="wav")
+    scenes = [Scene(id=i, image_path=Path(f"conversation_{i}.png"), text="x",
+                    speaker="Mina", duration=1.0) for i in (1, 2)]
+
+    def track(sfx_db, music_db, with_music):
+        out = tmp_path / f"track_{sfx_db}_{music_db}_{with_music}.wav"
+        cfg = Config(sfx_dir=sfx_dir, music_path=music if with_music else None,
+                     sfx_gain_db=sfx_db, music_gain_db=music_db)
+        return AudioSegment.from_file(build_track(scenes, cfg, out))
+
+    # SFX on its own (no music): the second SFX plays at 1000-1200ms
+    sfx_drop = track(0.0, -18.0, False)[1000:1200].dBFS - track(-12.0, -18.0, False)[1000:1200].dBFS
+    assert sfx_drop == pytest.approx(12.0, abs=0.5)
+    # music on its own, between the SFX (which play at 0-200ms and 1000-1200ms)
+    music_rise = track(-3.0, -10.0, True)[400:900].dBFS - track(-3.0, -30.0, True)[400:900].dBFS
+    assert music_rise == pytest.approx(20.0, abs=0.5)
+```
+
+`test_audio.py` needs `import pytest` and `from config import Config` at the top if they are not already there.
+
+Run: `pytest tests/test_timing.py tests/test_scenes.py tests/test_audio.py -v`
+Expected: FAIL. `Config` has no `speed` field, and `retime` does not exist. The gain test already passes on its own, because the pipeline has applied both gains since Task 6; it is there to guard the new controls.
 
 - [ ] **Step 3: Add `speed` to the rule and `retime` to scenes**
 
@@ -1142,7 +1176,7 @@ def retime(scenes, cfg: Config, overrides: dict[int, float]) -> None:
 ```
 
 Run: `pytest tests/ -v`
-Expected: everything passes, including the 3 new tests.
+Expected: everything passes, including the 4 new tests.
 
 - [ ] **Step 4: Write `app.py`**
 
@@ -1156,6 +1190,7 @@ import pandas as pd
 import streamlit as st
 
 from config import Config
+from pipeline.audio import build_track
 from pipeline.render import render
 from pipeline.runner import FFmpegFailed, FFmpegMissing, ensure_ffmpeg
 from pipeline.scenes import build_scenes, extract_zips, retime
@@ -1197,9 +1232,16 @@ with st.sidebar:
         max_duration = st.slider("Longest time on screen (s)",
                                  3.0, 15.0, DEFAULTS.max_duration, 0.5)
 
+    st.header("Volume")
+    sfx_gain_db = st.slider("Sound effect volume (dB)", -30.0, 6.0, DEFAULTS.sfx_gain_db, 0.5,
+                            help="0 dB plays the sound file at its own level.")
+    music_gain_db = st.slider("Music volume (dB)", -40.0, 0.0, DEFAULTS.music_gain_db, 0.5,
+                              help="0 dB plays the music file at its own level.")
+
 cfg = replace(DEFAULTS, speed=speed, base=base, per_word=per_word,
               chars_per_sec=chars_per_sec, min_duration=min_duration,
-              max_duration=max_duration)
+              max_duration=max_duration,
+              sfx_gain_db=sfx_gain_db, music_gain_db=music_gain_db)
 
 zips = st.file_uploader("Image zips from Generate All", type="zip",
                         accept_multiple_files=True)
@@ -1285,6 +1327,16 @@ if "scenes" in st.session_state:
         st.session_state.editor_version += 1
         st.rerun()
 
+    # Balance by ear in seconds instead of a full render.
+    if st.button("Preview audio mix (first 20 messages)"):
+        preview = Path(st.session_state.work) / "preview.wav"
+        try:
+            build_track(scenes[:20], cfg, preview)
+        except FileNotFoundError as e:  # music_path set but the file is missing
+            st.error(str(e))
+        else:
+            st.audio(str(preview))
+
     if st.button("Render video", type="primary"):
         work = Path(st.session_state.work)
         out = work / "final.mp4"
@@ -1294,7 +1346,7 @@ if "scenes" in st.session_state:
                 render(scenes, cfg, work / "render", out,
                        progress=lambda i, n: bar.progress(i / n,
                                                           text=f"Scene {i} of {n}"))
-        except FFmpegFailed as e:
+        except (FFmpegFailed, FileNotFoundError) as e:
             st.error(str(e))
             st.stop()
 
@@ -1323,13 +1375,15 @@ Check, in order:
 4. Tick a zoom and change one sfx, then move a slider. Both edits survive. This is the `st.session_state` trap, now also exercised by the sliders.
 5. Change one **Advanced timing rules** value and confirm the runtime responds.
 6. Press **Reset all to the rule**. The hand-set mark clears and that scene follows the sliders again.
-7. Render and download. Check the mp4's length against the caption with `ffprobe`. It should match to the second, because the caption counts the same whole frames the clips are cut to.
+7. Move **Music volume** up by about 10 dB and press **Preview audio mix**. The music is clearly louder under the sound effects, and the preview plays within a few seconds. Do the same with **Sound effect volume**.
+8. Temporarily rename `assets/music/background.mp3` and press **Preview audio mix**, then **Render video**. Both show a readable "music not found" message, not a stack trace. Rename it back.
+9. Render and download. Check the mp4's length against the caption with `ffprobe`. It should match to the second, because the caption counts the same whole frames the clips are cut to. Listen for the volume levels you set.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add app.py .streamlit/config.toml requirements.txt config.py pipeline/timing.py pipeline/scenes.py tests/test_timing.py tests/test_scenes.py
-git commit -m "feat: streamlit interface with editable scene table and timing controls"
+git add app.py .streamlit/config.toml requirements.txt config.py pipeline/timing.py pipeline/scenes.py tests/test_timing.py tests/test_scenes.py tests/test_audio.py
+git commit -m "feat: streamlit interface with editable scene table, timing and volume controls"
 ```
 
 **Send to the client to run themselves and collect usability feedback.**
@@ -1399,7 +1453,8 @@ adjustable lives there too.
 | Change how far the zoom pushes in | `zoom_end` |
 | Swap animated zoom for a hard cut | `zoom_mode` to `"punch"` |
 | Change how violent the shake is | `shake_amplitude` |
-| Change music or sfx volume | `music_gain_db`, `sfx_gain_db` |
+| Change music or sound effect volume, this once | The **Volume** sliders, with **Preview audio mix** to hear it |
+| Change the volume it starts at every time | `music_gain_db`, `sfx_gain_db` in `config.py` |
 
 ## Adding sound effects
 
@@ -1447,6 +1502,7 @@ Dispatch a reviewer per superpowers:requesting-code-review with `BASE_SHA` = the
 - [ ] Images appear in correct order across a 200 scene conversation
 - [ ] Short messages are visibly shorter on screen than long ones
 - [ ] Moving **Overall speed** updates the runtime live, the rendered mp4 matches it, and hand-set durations survive slider moves
+- [ ] The **Volume** sliders change both the audio preview and the rendered mix; a missing music file shows a readable message
 - [ ] A transition sound fires on every scene change, including the first
 - [ ] Audio is still in sync at the final transition
 - [ ] Flagged scenes zoom or shake; unflagged scenes are static

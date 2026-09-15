@@ -27,6 +27,7 @@ Additions the client requested after the original agreement, absorbed into this 
 6. A "shake" animation alongside zoom
 7. Roughly ten selectable SFX presets, overridable per scene
 8. Timing controls in the interface: an overall speed slider plus the individual timing-rule values, so the client can tune pacing without editing `config.py` (requested 2026-09-15, after approving the stage 1 pacing)
+9. Volume controls in the interface: sound effect and music levels in dB, so the client can balance the mix without editing `config.py` (requested 2026-09-15, during the stage 2 review)
 
 **Out of scope.** Auth, user accounts, hosting, job queues, crossfades or any transition beyond zoom and shake, captions, intro or outro cards, multi-conversation batching, saved or per-channel timing presets, and any change to the Apps Script generator. The Supabase migration the client raised is a separate project with its own quote.
 
@@ -173,7 +174,7 @@ track    = overlay(music looped/trimmed to total_ms, gain = music_gain_db)
 for each scene: track = overlay(sfx_for(scene), position = cumulative_ms)
 ```
 
-Offsets accumulate in **integer milliseconds**, not floats. Across 200 scenes float drift is audible by the end.
+Offsets accumulate in **integer milliseconds**, not floats. Across 200 scenes float drift is audible by the end. Since 2026-09-15 the offsets also come from the running count of whole frames each clip is cut to, not from summed durations, so sound and picture share one clock.
 
 The SFX fires at the start of every scene including the first. Muxing keeps the video untouched:
 
@@ -181,6 +182,8 @@ The SFX fires at the start of every scene including the first. Muxing keeps the 
 ffmpeg -y -i silent.mp4 -i track.wav -c:v copy -c:a aac -b:a 192k \
   -shortest -movflags +faststart final.mp4
 ```
+
+**Levels.** `sfx_gain_db` and `music_gain_db` are dB offsets applied in pydub: 0 dB plays a file at its own level, and negative values turn it down. The `config.py` values are the defaults, and the interface can change both per session (§10). Measured at stage 2 with the client's files at the original defaults (-3 / -18), the music sat about 24 dB under the SFX and read as silent. The music default is raised once the client gives their balance answer.
 
 **Music licensing is a client responsibility and has been raised with them.** One track across 30 monetised channels is a copyright-claim generator if it is not properly cleared.
 
@@ -190,7 +193,7 @@ Streamlit, deliberately minimal, and the only replaceable part of the system.
 
 1. Upload one or more `.zip` files (multiple, because a 200-row Generate All likely exceeds Apps Script's six-minute execution cap and is probably already run in batches)
 2. Upload the sheet CSV
-3. Timing controls in the sidebar (see below)
+3. Timing and volume controls in the sidebar (see below)
 4. An editable scene table: id, message preview, word count, **duration**, **zoom**, **shake**, **sfx preset**
 5. Render, with a spinner
 6. Preview and download
@@ -203,6 +206,12 @@ Scene state lives in `st.session_state`, or edits are wiped on every rerun. `ser
 - **Hand edits win.** Moving any control recalculates every scene's duration from the rule, except scenes whose duration was typed into the table by hand. Those keep their value and are marked as hand-set. A **Reset all to the rule** button clears every hand-set duration.
 - Controls start at the `config.py` defaults each session. Nothing is saved; changing the defaults is still an edit to `config.py`.
 - Table edits are reconciled by scene id into a canonical state in `st.session_state`, and the editor's key is bumped after each edit. That stops stale editor edits being re-applied over durations the sliders have just recalculated.
+
+**Volume controls.**
+- **Sound effect volume** slider, -30 to +6 dB, and **Music volume** slider, -40 to 0 dB. Both are labelled in dB, where 0 dB means the file's own level.
+- They start at the `config.py` defaults each session. Like the timing controls, nothing is saved.
+- **Preview audio mix** builds the track for the first 20 messages at the current levels and plays it in the page, so the client can balance by ear without a full render. It takes seconds; a full render takes over a minute.
+- A missing music file (`music_path` set but absent) shows as an error message in the page, not a stack trace, for both the preview and the render.
 
 ## 11. Error handling
 
@@ -218,7 +227,7 @@ Three failures get explicit treatment. Everything else may raise.
 
 Chosen depth: real tests on the pure core, one end-to-end smoke test.
 
-**Unit.** Duration rule at the client's stated pairs and both clamps; overall speed scaling every duration including the clamps; recalculating durations while keeping hand-set ones; natural sort against the `conversation_10` before `conversation_2` trap; id parsing and the multi-row-per-id join; the count-mismatch failure; SFX offsets accumulating without drift over 200 scenes; and zoom, shake and plain clips producing identical codec, fps and dimension flags.
+**Unit.** Duration rule at the client's stated pairs and both clamps; overall speed scaling every duration including the clamps; recalculating durations while keeping hand-set ones; the SFX and music gains changing the level of the built track; natural sort against the `conversation_10` before `conversation_2` trap; id parsing and the multi-row-per-id join; the count-mismatch failure; SFX offsets accumulating without drift over 200 scenes; and zoom, shake and plain clips producing identical codec, fps and dimension flags.
 
 **Smoke.** Three real PNGs end to end, asserting the mp4 exists, ffprobe duration is within 0.1s of the sum, and exactly one audio stream is present.
 
