@@ -13,13 +13,22 @@ class FFmpegFailed(RuntimeError):
 
 
 def ensure_ffmpeg() -> None:
-    if shutil.which("ffmpeg") is None:
-        raise FFmpegMissing(
-            "FFmpeg is not installed or not on PATH.\n"
-            "  macOS:   brew install ffmpeg\n"
-            "  Windows: winget install Gyan.FFmpeg\n"
-            "  Linux:   sudo apt install ffmpeg"
-        )
+    """Both tools must be on PATH: ffmpeg renders, and pydub needs ffprobe
+    to read the mp3 music."""
+    missing = [tool for tool in ("ffmpeg", "ffprobe") if shutil.which(tool) is None]
+    if not missing:
+        return
+    if missing == ["ffprobe"]:
+        problem = ("FFmpeg's ffprobe was not found on PATH (it comes with FFmpeg). "
+                   "Reinstall FFmpeg so both ffmpeg and ffprobe are installed.")
+    else:
+        problem = "FFmpeg is not installed or not on PATH."
+    raise FFmpegMissing(
+        f"{problem}\n"
+        "  macOS:   brew install ffmpeg\n"
+        "  Windows: winget install Gyan.FFmpeg\n"
+        "  Linux:   sudo apt install ffmpeg"
+    )
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess:

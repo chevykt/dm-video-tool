@@ -136,6 +136,14 @@ def test_wrong_tab_csv_names_missing_columns(tmp_path):
         build_scenes([Path("conversation_1.png")], csv_path, CFG)
 
 
+def test_no_messages_at_all_fails_with_a_readable_message(tmp_path):
+    # A header-only CSV and zip(s) with no PNGs: nothing lines up wrongly,
+    # there is simply nothing to render. Must not reach the table as [].
+    csv_path = _csv(tmp_path, [])
+    with pytest.raises(ValueError, match=r"No messages found"):
+        build_scenes([], csv_path, CFG)
+
+
 def test_empty_csv_reports_missing_columns(tmp_path):
     csv_path = tmp_path / "empty.csv"
     csv_path.write_text("", encoding="utf-8")

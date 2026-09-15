@@ -1,4 +1,5 @@
 # app.py
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -111,20 +112,27 @@ csv_file = st.file_uploader("Sheet exported as CSV", type="csv", disabled=busy)
 
 if zips and csv_file and st.button("Load scenes", disabled=busy):
     work = workdirs.new_work_dir()
-    zip_paths = []
-    for z in zips:
-        p = work / z.name
-        p.write_bytes(z.getbuffer())
-        zip_paths.append(p)
-    csv_path = work / "sheet.csv"
-    csv_path.write_bytes(csv_file.getbuffer())
-
     try:
+        zip_paths = []
+        for i, z in enumerate(zips, start=1):
+            # Numbered, so two zips with the same file name (two batches
+            # saved from different folders) cannot overwrite each other.
+            p = work / f"{i:02d}_{z.name}"
+            p.write_bytes(z.getbuffer())
+            zip_paths.append(p)
+        csv_path = work / "sheet.csv"
+        csv_path.write_bytes(csv_file.getbuffer())
+
         images = extract_zips(zip_paths, work / "images")
         scenes = build_scenes(images, csv_path, cfg)
-    except ValueError as e:
+    except Exception as e:
         workdirs.remove(work)
-        st.error(str(e))
+        if isinstance(e, ValueError):  # the sheet and images, in plain words
+            st.error(str(e))
+        elif isinstance(e, zipfile.BadZipFile):
+            st.error("One of the zips is damaged or incomplete — download it again.")
+        else:
+            _show_unexpected(e)
         st.stop()
 
     # Only once the new conversation has loaded: a failed load keeps the one
@@ -205,6 +213,8 @@ if "scenes" in st.session_state:
             build_track(scenes[:20], cfg, preview)
         except FileNotFoundError as e:  # music_path set but the file is missing
             st.error(str(e))
+        except Exception as e:
+            _show_unexpected(e)
         else:
             st.audio(str(preview))
 

@@ -116,6 +116,8 @@ def build_scenes(image_paths: list[Path], csv_path: Path, cfg: Config) -> list[S
             f"Image and sheet do not line up. "
             f"Images with no row: {orphan_images}. Rows with no image: {orphan_rows}."
         )
+    if not images:  # and so no rows either: nothing lines up wrongly, there is nothing
+        raise ValueError("No messages found — check the CSV and the zip(s).")
 
     scenes = []
     for sid in sorted(images):

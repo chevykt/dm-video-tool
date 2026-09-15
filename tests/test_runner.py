@@ -52,3 +52,27 @@ def test_ensure_ffmpeg_missing_mentions_winget(monkeypatch):
     monkeypatch.setattr("pipeline.runner.shutil.which", lambda name: None)
     with pytest.raises(FFmpegMissing, match="winget install Gyan.FFmpeg"):
         ensure_ffmpeg()
+
+
+def test_ensure_ffmpeg_also_requires_ffprobe(monkeypatch):
+    # pydub needs ffprobe to read the mp3 music. Without it the render
+    # failed with a bare "[WinError 2]" that looked like missing music.
+    monkeypatch.setattr("pipeline.runner.shutil.which",
+                        lambda name: None if name == "ffprobe" else f"/bin/{name}")
+    with pytest.raises(FFmpegMissing) as exc_info:
+        ensure_ffmpeg()
+    message = str(exc_info.value)
+    assert "ffprobe" in message
+    assert "winget install Gyan.FFmpeg" in message
+
+
+def test_ensure_ffmpeg_names_ffmpeg_when_only_ffmpeg_is_missing(monkeypatch):
+    monkeypatch.setattr("pipeline.runner.shutil.which",
+                        lambda name: None if name == "ffmpeg" else f"/bin/{name}")
+    with pytest.raises(FFmpegMissing, match=r"^FFmpeg is not installed"):
+        ensure_ffmpeg()
+
+
+def test_ensure_ffmpeg_passes_when_both_are_present(monkeypatch):
+    monkeypatch.setattr("pipeline.runner.shutil.which", lambda name: f"/bin/{name}")
+    ensure_ffmpeg()

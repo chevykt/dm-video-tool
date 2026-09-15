@@ -374,6 +374,82 @@ def test_app_start_sweeps_work_dirs_older_than_a_day(temp_root):
     assert recent.exists()
 
 
+def _load_files(at, zips, csv_path):
+    """Upload the given (name, bytes) zips and a CSV, then click Load scenes."""
+    at.run()
+    at.file_uploader[0].set_value([(name, data, "application/zip") for name, data in zips])
+    at.file_uploader[1].set_value((csv_path.name, csv_path.read_bytes(), "text/csv"))
+    at.run()
+    next(b for b in at.button if b.label == "Load scenes").click()
+    at.run()
+    return at
+
+
+def test_a_damaged_zip_gets_a_readable_message(tmp_path, temp_root):
+    zip_path, csv_path = _build_upload(tmp_path)
+    cut_short = zip_path.read_bytes()[:200]  # an interrupted download
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_files(at, [("batch.zip", cut_short)], csv_path)
+
+    assert not at.exception
+    assert len(at.error) == 1
+    assert "damaged or incomplete" in at.error[0].value
+    assert _work_dirs(temp_root) == []
+
+
+def test_two_zips_with_the_same_file_name_both_load(tmp_path):
+    # Two Generate All batches saved as batch.zip in different folders used
+    # to overwrite each other and be reported as "Duplicate images".
+    zip_path, csv_path = _build_upload(tmp_path)
+    images = tmp_path / "images"
+    halves = []
+    for members in (["conversation_1.png"], ["conversation_2.png", "conversation_3.png"]):
+        part = tmp_path / f"part_{len(halves)}.zip"
+        with zipfile.ZipFile(part, "w") as z:
+            for m in members:
+                z.write(images / m, m)
+        halves.append(("batch.zip", part.read_bytes()))
+
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_files(at, halves, csv_path)
+
+    assert not at.exception and not at.error
+    assert "3 scenes" in at.caption[0].value
+
+
+def test_an_unexpected_load_error_shows_a_plain_message(tmp_path, temp_root, monkeypatch):
+    zip_path, csv_path = _build_upload(tmp_path)
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("an error nobody planned for")
+
+    monkeypatch.setattr("pipeline.scenes.build_scenes", crash)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+
+    assert len(at.error) == 1
+    assert "send Keon a screenshot" in at.error[0].value
+    details = next(e for e in at.expander if e.label == "Details")
+    assert "an error nobody planned for" in details.exception[0].message
+    assert _work_dirs(temp_root) == []
+
+
+def test_an_unexpected_preview_error_shows_a_plain_message(tmp_path, monkeypatch):
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("an error nobody planned for")
+
+    monkeypatch.setattr("pipeline.audio.build_track", crash)
+    next(b for b in at.button if b.label.startswith("Preview audio mix")).click()
+    at.run()
+
+    assert len(at.error) == 1
+    assert "send Keon a screenshot" in at.error[0].value
+
+
 def test_overall_speed_slider_shortens_the_runtime(tmp_path):
     zip_path, csv_path = _build_upload(tmp_path)
     at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
