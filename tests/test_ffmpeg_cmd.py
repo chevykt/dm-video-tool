@@ -25,7 +25,7 @@ def test_composite_fits_then_pads_to_canvas():
 
 def test_scene_clip_command_shape():
     cmd = build_scene_clip_cmd(_scene(), CFG, Path("out.mp4"))
-    assert cmd[:5] == ["ffmpeg", "-y", "-loop", "1", "-i"]
+    assert cmd[:7] == ["ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-i"]
     assert "-t" not in cmd
     assert cmd[cmd.index("-frames:v") + 1] == "60"
     assert cmd[cmd.index("-r") + 1] == "30"

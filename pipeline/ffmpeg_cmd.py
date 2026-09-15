@@ -23,6 +23,7 @@ def build_scene_clip_cmd(scene: Scene, cfg: Config, out_path: Path,
     return [
         "ffmpeg", "-y",
         "-loop", "1",
+        "-framerate", str(cfg.fps),
         "-i", str(scene.image_path),
         "-frames:v", str(frames_for(scene.duration, cfg.fps)),
         "-vf", filter_override or scene_filter(scene, cfg),
