@@ -1,9 +1,17 @@
 [server]
+# 200 PNGs from Generate All typically run 40-100 MB across the zip(s).
 maxUploadSize = 500
 # Skip the "enter your email" prompt Streamlit shows on first launch, which
 # would otherwise block a non-technical client before they see the app.
 showEmailPrompt = false
+# This app accepts file uploads and runs FFmpeg on them, so it must only be
+# reachable from this machine, never from other devices on the network.
+address = "localhost"
 
 [browser]
 # Usage stats are off by default for this local, client-run tool.
 gatherUsageStats = false
+
+[client]
+# Hides the "Deploy" button, which is irrelevant for a local desktop tool.
+toolbarMode = "minimal"

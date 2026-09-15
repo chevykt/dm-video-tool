@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+SFX_EXTENSIONS = (".wav", ".mp3")
+
 
 @dataclass
 class Config:
@@ -38,4 +40,15 @@ class Config:
     music_gain_db: float = -10.0  # client approved the stage 3 sample at -10 dB
 
     def sfx_path(self, name: str) -> Path:
+        for ext in SFX_EXTENSIONS:
+            candidate = self.sfx_dir / f"{name}{ext}"
+            if candidate.exists():
+                return candidate
         return self.sfx_dir / f"{name}.wav"
+
+    def sfx_choices(self) -> list[str]:
+        stems = {
+            p.stem for p in self.sfx_dir.glob("*")
+            if p.suffix.lower() in SFX_EXTENSIONS
+        }
+        return sorted(stems) or [self.default_sfx]

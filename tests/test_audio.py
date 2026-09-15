@@ -1,4 +1,6 @@
 # tests/test_audio.py
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -69,6 +71,25 @@ def test_missing_music_file_raises_instead_of_silently_skipping(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="missing.mp3"):
         build_track(_scenes(2.0, 2.0), cfg, tmp_path / "track.wav")
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="requires ffmpeg")
+def test_build_track_works_with_an_mp3_sfx(tmp_path):
+    sfx_dir = tmp_path / "sfx"
+    sfx_dir.mkdir()
+    mp3 = sfx_dir / "pop.mp3"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=1000:duration=0.2",
+         "-c:a", "libmp3lame", str(mp3)],
+        check=True, capture_output=True,
+    )
+
+    scenes = _scenes(2.0, 2.0)
+    cfg = Config(sfx_dir=sfx_dir, music_path=None)
+    out = build_track(scenes, cfg, tmp_path / "track.wav")
+
+    track = AudioSegment.from_file(out)
+    assert len(track) == total_ms(scenes, cfg)
 
 
 def test_gains_change_the_level_of_their_own_layer(tmp_path):

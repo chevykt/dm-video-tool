@@ -24,7 +24,7 @@ except FFmpegMissing as e:
     st.stop()
 
 DEFAULTS = Config()
-SFX_CHOICES = sorted(p.stem for p in DEFAULTS.sfx_dir.glob("*.wav")) or [DEFAULTS.default_sfx]
+SFX_CHOICES = DEFAULTS.sfx_choices()
 
 
 def _runtime(seconds: float) -> str:
