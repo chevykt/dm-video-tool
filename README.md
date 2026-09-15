@@ -22,7 +22,9 @@ The app works with Python 3.12, 3.13 or 3.14. Get it from
   the newer *Python install manager* instead, that works too; there is no
   PATH box to tick.)
 - **Mac:** download the **macOS installer** and run it. The `python3` that
-  comes with Apple's developer tools is too old and is not used.
+  comes with Apple's developer tools is too old and is not used. This app
+  needs **macOS 12 (Monterey) or newer**; on an older Mac the setup step
+  below fails.
 
 ### 3. Install FFmpeg
 
@@ -135,6 +137,7 @@ default is `pop`.
 | "No messages found" | The CSV has no messages or the zips have no images. Check you exported the conversation's tab and uploaded the right zips. |
 | "Sheet CSV is missing required column(s)" | The wrong sheet tab was exported. Open the conversation's tab before downloading the CSV. |
 | "Background music not found..." | Rename the music to `background.mp3` and put it at `assets/music/background.mp3` (see Install once, above). |
+| First launch fails at installing packages, on a Mac | The Mac is older than macOS 12 (Monterey). Update macOS, then double-click the launcher again. |
 | "Something went wrong — send Keon a screenshot of this" | Something unexpected. Click **Details** under the message and send Keon a screenshot of it. |
 
 ## For whoever builds the centralised app later
