@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn a batch of pre-generated chat-bubble PNGs plus a sheet CSV into one finished 16:9 mp4 with word-count timing, transition SFX, background music, and per-scene zoom or shake, driven from a minimal local web interface.
+**Goal:** Turn a batch of pre-generated chat-bubble PNGs plus a sheet CSV into one finished 16:9 mp4 with word-count timing, transition SFX, background music, and per-scene zoom or shake, driven from a minimal local web interface with live timing controls.
 
 **Architecture:** Pure-logic core, thin execution layer, swappable interface. Every FFmpeg command is produced by a pure function returning an argv list, so filter strings are unit-testable without FFmpeg. Each scene renders to its own short mp4 with identical encoder settings; clips concat with `-c copy`; one prepared audio track is muxed at the end.
 
@@ -17,7 +17,7 @@
 - `render.py` must never import streamlit. `app.py` must never build an FFmpeg argument. This separation was promised to the client in writing.
 - Audio offsets accumulate in **integer milliseconds**, never floats.
 - Images join to CSV rows by the id parsed from `conversation_<id>.png`, never by sort order.
-- Timing defaults: `base=1.0`, `per_word=0.34`, `chars_per_sec=17`, `min=1.2`, `max=7.0`.
+- Timing defaults: `base=1.0`, `per_word=0.34`, `chars_per_sec=17`, `min=1.2`, `max=7.0`, `speed=1.0` (speed added in Task 8; stage 1 pacing was approved at these values).
 - `.env` and `outputs/` are gitignored from the first commit. No API key ever reaches the repo.
 - Commit after every task.
 
@@ -1014,10 +1014,17 @@ Render both `zoom_mode` values and show the client each. Too much or too little 
 
 **Files:**
 - Create: `app.py`, `.streamlit/config.toml`
+- Modify: `config.py` (add `speed`), `pipeline/timing.py` (apply `speed`), `pipeline/scenes.py` (add `retime`)
+- Test: `tests/test_timing.py`, `tests/test_scenes.py`
 
 **Interfaces:**
-- Consumes: `extract_zips`, `build_scenes` (Task 3), `render` (Task 6), `Config` (Task 1)
-- Produces: nothing consumed by later tasks
+- Consumes: `extract_zips`, `build_scenes` (Task 3), `render` (Task 6), `Config` (Task 1), `duration_for` (Task 2)
+- Produces:
+  - `Config.speed: float = 1.0`, applied by `duration_for` as a final divide
+  - `retime(scenes, cfg, overrides: dict[int, float]) -> None`
+  - Nothing else consumed by later tasks
+
+Timing controls were requested by the client on 2026-09-15, after they approved the stage 1 pacing. See spec §2 item 8 and §10 "Timing controls". The rule logic stays in `pipeline/` and is unit tested; `app.py` only reads sliders and builds a `Config`.
 
 - [ ] **Step 1: Raise the upload limit**
 
@@ -1027,11 +1034,79 @@ Render both `zoom_mode` values and show the client each. Too much or too little 
 maxUploadSize = 500
 ```
 
-- [ ] **Step 2: Write `app.py`**
+- [ ] **Step 2: Write the failing tests for overall speed and `retime`**
+
+Append to `tests/test_timing.py`:
+
+```python
+def test_speed_scales_every_duration_including_the_clamps():
+    fast = Config(speed=2.0)
+    # word rule: 2.02 -> 1.01
+    assert duration_for("coin says no", fast) == pytest.approx(1.01)
+    # ceiling: 7.0 -> 3.5
+    assert duration_for("word " * 40, fast) == pytest.approx(CFG.max_duration / 2)
+    # floor: 1.2 -> 0.6
+    assert duration_for("hi", Config(base=0.2, per_word=0.1, speed=2.0)) == pytest.approx(0.6)
+
+
+def test_default_speed_leaves_the_approved_pacing_alone():
+    assert Config().speed == 1.0
+    assert round(duration_for("coin says no", CFG), 2) == 2.02
+```
+
+Append to `tests/test_scenes.py`, adding `Scene` and `retime` to its `pipeline.scenes` import:
+
+```python
+def test_retime_recomputes_from_the_rule_but_keeps_hand_set_durations():
+    scenes = [
+        Scene(id=1, image_path=Path("conversation_1.png"), text="coin says no",
+              speaker="Mina", duration=9.0),
+        Scene(id=2, image_path=Path("conversation_2.png"), text="coin says no",
+              speaker="Mina", duration=9.0),
+    ]
+    retime(scenes, Config(speed=2.0), overrides={2: 4.5})
+    assert scenes[0].duration == pytest.approx(1.01)
+    assert scenes[1].duration == 4.5
+```
+
+Run: `pytest tests/test_timing.py tests/test_scenes.py -v`
+Expected: FAIL. `Config` has no `speed` field, and `retime` does not exist.
+
+- [ ] **Step 3: Add `speed` to the rule and `retime` to scenes**
+
+In `config.py`, add to the timing section:
+
+```python
+    speed: float = 1.0               # overall pace; 1.2 plays every message 20% faster
+```
+
+In `pipeline/timing.py`, replace the final `return` of `duration_for`:
+
+```python
+    clamped = min(max(by_word, by_char, cfg.min_duration), cfg.max_duration)
+    # Dividing after the clamp scales every scene by the same factor, so the
+    # total runtime scales by exactly 1 / speed.
+    return clamped / cfg.speed
+```
+
+Append to `pipeline/scenes.py`:
+
+```python
+def retime(scenes, cfg: Config, overrides: dict[int, float]) -> None:
+    """Recompute every scene's duration from the rule, keeping hand-set ones."""
+    for scene in scenes:
+        scene.duration = overrides.get(scene.id, duration_for(scene.text, cfg))
+```
+
+Run: `pytest tests/ -v`
+Expected: everything passes, including the 3 new tests.
+
+- [ ] **Step 4: Write `app.py`**
 
 ```python
 # app.py
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -1040,7 +1115,7 @@ import streamlit as st
 from config import Config
 from pipeline.render import render
 from pipeline.runner import FFmpegFailed, FFmpegMissing, ensure_ffmpeg
-from pipeline.scenes import build_scenes, extract_zips
+from pipeline.scenes import build_scenes, extract_zips, retime
 
 st.set_page_config(page_title="DM Video Renderer", layout="wide")
 st.title("DM Video Renderer")
@@ -1051,8 +1126,36 @@ except FFmpegMissing as e:
     st.error(str(e))
     st.stop()
 
-cfg = Config()
-SFX_CHOICES = sorted(p.stem for p in cfg.sfx_dir.glob("*.wav")) or [cfg.default_sfx]
+DEFAULTS = Config()
+SFX_CHOICES = sorted(p.stem for p in DEFAULTS.sfx_dir.glob("*.wav")) or [DEFAULTS.default_sfx]
+
+
+def _runtime(seconds: float) -> str:
+    s = int(round(seconds))
+    return f"{s // 60}m {s % 60:02d}s"
+
+
+# Timing controls. Slider values live only for this session; config.py holds
+# the defaults they start from. app.py builds a Config, never an FFmpeg arg.
+with st.sidebar:
+    st.header("Timing")
+    speed = st.slider("Overall speed", 0.7, 1.5, DEFAULTS.speed, 0.05, format="%.2fx",
+                      help="1.20x plays every message 20% faster. "
+                           "Durations you typed into the table are not changed.")
+    with st.expander("Advanced timing rules"):
+        base = st.slider("Pause before reading (s)", 0.0, 3.0, DEFAULTS.base, 0.05)
+        per_word = st.slider("Seconds per word", 0.10, 1.00, DEFAULTS.per_word, 0.01)
+        chars_per_sec = st.slider("Reading speed (characters per second)",
+                                  8.0, 30.0, DEFAULTS.chars_per_sec, 0.5)
+        # Fixed ranges that meet at 3.0, so the floor can never exceed the ceiling.
+        min_duration = st.slider("Shortest time on screen (s)",
+                                 0.5, 3.0, DEFAULTS.min_duration, 0.1)
+        max_duration = st.slider("Longest time on screen (s)",
+                                 3.0, 15.0, DEFAULTS.max_duration, 0.5)
+
+cfg = replace(DEFAULTS, speed=speed, base=base, per_word=per_word,
+              chars_per_sec=chars_per_sec, min_duration=min_duration,
+              max_duration=max_duration)
 
 zips = st.file_uploader("Image zips from Generate All", type="zip",
                         accept_multiple_files=True)
@@ -1077,38 +1180,67 @@ if zips and csv_file and st.button("Load scenes"):
 
     st.session_state.work = str(work)
     st.session_state.scenes = scenes
-    st.session_state.table = pd.DataFrame([
+    st.session_state.overrides = {}
+    st.session_state.editor_version = st.session_state.get("editor_version", 0) + 1
+
+if "scenes" in st.session_state:
+    scenes = st.session_state.scenes
+    overrides: dict[int, float] = st.session_state.overrides
+    retime(scenes, cfg, overrides)  # sliders apply to every scene not set by hand
+
+    total = sum(s.duration for s in scenes)
+    st.caption(f"{len(scenes)} scenes, {_runtime(total)}"
+               + (f", {len(overrides)} set by hand" if overrides else ""))
+
+    table = pd.DataFrame([
         {"id": s.id, "speaker": s.speaker, "message": s.text[:60],
-         "seconds": round(s.duration, 2), "zoom": s.zoom, "shake": s.shake,
-         "sfx": s.sfx}
+         "seconds": round(s.duration, 2), "hand-set": s.id in overrides,
+         "zoom": s.zoom, "shake": s.shake, "sfx": s.sfx}
         for s in scenes
     ])
-
-if "table" in st.session_state:
-    total = st.session_state.table["seconds"].sum()
-    st.caption(f"{len(st.session_state.table)} scenes, "
-               f"{int(total // 60)}m {int(total % 60)}s")
-
     edited = st.data_editor(
-        st.session_state.table,
-        disabled=["id", "speaker", "message"],
-        column_config={"sfx": st.column_config.SelectboxColumn(options=SFX_CHOICES)},
+        table,
+        disabled=["id", "speaker", "message", "hand-set"],
+        column_config={
+            "seconds": st.column_config.NumberColumn(min_value=0.2, max_value=30.0,
+                                                     step=0.05, format="%.2f"),
+            "sfx": st.column_config.SelectboxColumn(options=SFX_CHOICES),
+        },
         hide_index=True,
         use_container_width=True,
-        key="editor",
+        # A fresh key after every reconciled edit, so the editor never re-applies
+        # a stale edit on top of durations the sliders have just recalculated.
+        key=f"editor_{st.session_state.editor_version}",
     )
 
-    if st.button("Render video", type="primary"):
-        scenes = st.session_state.scenes
-        # Match by id, never by row position: the table can be sorted in the UI.
-        by_id = {s.id: s for s in scenes}
-        for _, row in edited.iterrows():
-            scene = by_id[int(row["id"])]
-            scene.duration = float(row["seconds"])
-            scene.zoom = bool(row["zoom"])
-            scene.shake = bool(row["shake"])
+    # Fold edits into the canonical state. Match by id, never by row position:
+    # the table can be sorted in the UI.
+    by_id = {s.id: s for s in scenes}
+    before = table.set_index("id")
+    changed = False
+    for _, row in edited.iterrows():
+        sid = int(row["id"])
+        scene = by_id[sid]
+        if not pd.isna(row["seconds"]) and float(row["seconds"]) != before.at[sid, "seconds"]:
+            overrides[sid] = float(row["seconds"])
+            changed = True
+        for col in ("zoom", "shake"):
+            if bool(row[col]) != bool(before.at[sid, col]):
+                setattr(scene, col, bool(row[col]))
+                changed = True
+        if str(row["sfx"]) != str(before.at[sid, "sfx"]):
             scene.sfx = str(row["sfx"])
+            changed = True
+    if changed:
+        st.session_state.editor_version += 1
+        st.rerun()
 
+    if overrides and st.button("Reset all to the rule"):
+        overrides.clear()
+        st.session_state.editor_version += 1
+        st.rerun()
+
+    if st.button("Render video", type="primary"):
         work = Path(st.session_state.work)
         out = work / "final.mp4"
         bar = st.progress(0.0, text="Rendering scenes")
@@ -1128,24 +1260,31 @@ if "table" in st.session_state:
                            mime="video/mp4")
 ```
 
-- [ ] **Step 3: Add pandas to requirements and install**
+- [ ] **Step 5: Add pandas to requirements and install**
 
 ```bash
 echo "pandas>=2.2" >> requirements.txt
 pip install -r requirements.txt
 ```
 
-- [ ] **Step 4: Run it and verify by hand**
+- [ ] **Step 6: Run it and verify by hand**
 
 Run: `streamlit run app.py`
 
-Check: upload two zips plus a CSV, edit a duration, tick a zoom, change one sfx, render, download. Confirm the edits survive ticking a second checkbox, which is the `st.session_state` trap.
+Check, in order:
+1. Upload two zips plus a CSV and load the scenes. The caption shows the runtime at the default settings; for the approved 200-message conversation that is about 9m 43s.
+2. Drag **Overall speed** to 1.20x. The runtime drops to about 1/1.2 of the original, and every `seconds` value shrinks.
+3. Type a duration into one scene by hand. It shows as hand-set. Move the speed slider again: that scene keeps its typed value, and the others change.
+4. Tick a zoom and change one sfx, then move a slider. Both edits survive. This is the `st.session_state` trap, now also exercised by the sliders.
+5. Change one **Advanced timing rules** value and confirm the runtime responds.
+6. Press **Reset all to the rule**. The hand-set mark clears and that scene follows the sliders again.
+7. Render and download. Check the mp4's length against the caption with `ffprobe`. It should match to within about a frame per scene, until the frame-rounding fix lands.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add app.py .streamlit/config.toml requirements.txt
-git commit -m "feat: streamlit interface with editable scene table"
+git add app.py .streamlit/config.toml requirements.txt config.py pipeline/timing.py pipeline/scenes.py tests/test_timing.py tests/test_scenes.py
+git commit -m "feat: streamlit interface with editable scene table and timing controls"
 ```
 
 **Send to the client to run themselves and collect usability feedback.**
@@ -1202,11 +1341,16 @@ Turns the images from the Instagram DMs Generator sheet into a finished mp4.
 
 ## Changing how it feels
 
-Everything adjustable lives in `config.py`.
+Timing can be tuned in the app's sidebar every session: the **Overall speed**
+slider, or the finer rules under **Advanced timing rules**. Durations typed into
+the scene table by hand always win; **Reset all to the rule** clears them. The
+sidebar starts from the defaults in `config.py` each time, and everything else
+adjustable lives there too.
 
 | To do this | Change |
 |---|---|
-| Speed the whole video up or down | `base` and `per_word` |
+| Speed the whole video up or down, this once | The **Overall speed** slider |
+| Change the speed it starts at every time | `speed` in `config.py` (or `base` and `per_word`) |
 | Change how far the zoom pushes in | `zoom_end` |
 | Swap animated zoom for a hard cut | `zoom_mode` to `"punch"` |
 | Change how violent the shake is | `shake_amplitude` |
@@ -1257,6 +1401,7 @@ Dispatch a reviewer per superpowers:requesting-code-review with `BASE_SHA` = the
 - [ ] `pytest tests/ -v` passes with no skips on a machine with FFmpeg
 - [ ] Images appear in correct order across a 200 scene conversation
 - [ ] Short messages are visibly shorter on screen than long ones
+- [ ] Moving **Overall speed** updates the runtime live, the rendered mp4 matches it, and hand-set durations survive slider moves
 - [ ] A transition sound fires on every scene change, including the first
 - [ ] Audio is still in sync at the final transition
 - [ ] Flagged scenes zoom or shake; unflagged scenes are static

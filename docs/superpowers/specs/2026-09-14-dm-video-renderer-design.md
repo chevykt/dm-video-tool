@@ -26,8 +26,9 @@ Additions the client requested after the original agreement, absorbed into this 
 5. One background music track under the whole video
 6. A "shake" animation alongside zoom
 7. Roughly ten selectable SFX presets, overridable per scene
+8. Timing controls in the interface: an overall speed slider plus the individual timing-rule values, so the client can tune pacing without editing `config.py` (requested 2026-09-15, after approving the stage 1 pacing)
 
-**Out of scope.** Auth, user accounts, hosting, job queues, crossfades or any transition beyond zoom and shake, captions, intro or outro cards, multi-conversation batching, and any change to the Apps Script generator. The Supabase migration the client raised is a separate project with its own quote.
+**Out of scope.** Auth, user accounts, hosting, job queues, crossfades or any transition beyond zoom and shake, captions, intro or outro cards, multi-conversation batching, saved or per-channel timing presets, and any change to the Apps Script generator. The Supabase migration the client raised is a separate project with its own quote.
 
 ## 3. Verified facts about the existing system
 
@@ -103,7 +104,7 @@ duration(text):
     chars   = len(text)
     by_word = base + per_word * words
     by_char = base + chars / chars_per_sec
-    return clamp(max(by_word, by_char), min_dur, max_dur)
+    return clamp(max(by_word, by_char), min_dur, max_dur) / speed
 ```
 
 Defaults, calibrated against the client's own published runtime rather than invented: a 200-message script at roughly 9:30 implies about 2.85 seconds per message, and their scripts average around 5.5 words.
@@ -115,8 +116,11 @@ Defaults, calibrated against the client's own published runtime rather than inve
 | `chars_per_sec` | 17 | Subtitle-industry reading rate; stops "unbelievable" flashing past |
 | `min_duration` | 1.2 | Floor for one-word lines like "obviously" |
 | `max_duration` | 7.0 | Ceiling for the long CTA lines |
+| `speed` | 1.0 | Overall pace. 1.2 plays every message 20% faster |
 
 Taking the **larger** of the word-based and character-based figures is what stops long words being under-timed.
+
+**Overall speed.** `speed` divides the result *after* the clamp, so every scene scales by the same factor, the floor and ceiling included. The total runtime therefore scales by exactly `1 / speed`, which is what lets the interface show the new runtime while the slider moves. The client approved stage 1 pacing at `speed = 1.0`, so the defaults stay unchanged.
 
 The `(text)` prefix on some rows is deliberate narration: it marks messages sent in a private thread rather than the group chat. It renders on screen, the viewer reads it, so it counts toward duration like any other text. Nothing is stripped and there is no config flag for it.
 
@@ -186,11 +190,19 @@ Streamlit, deliberately minimal, and the only replaceable part of the system.
 
 1. Upload one or more `.zip` files (multiple, because a 200-row Generate All likely exceeds Apps Script's six-minute execution cap and is probably already run in batches)
 2. Upload the sheet CSV
-3. An editable scene table: id, message preview, word count, **duration**, **zoom**, **shake**, **sfx preset**
-4. Render, with a spinner
-5. Preview and download
+3. Timing controls in the sidebar (see below)
+4. An editable scene table: id, message preview, word count, **duration**, **zoom**, **shake**, **sfx preset**
+5. Render, with a spinner
+6. Preview and download
 
 Scene state lives in `st.session_state`, or edits are wiped on every rerun. `server.maxUploadSize` must be raised; 200 PNGs run 40 to 100MB.
+
+**Timing controls.**
+- **Overall speed** slider, 0.7x to 1.5x, with the total runtime updating live as it moves. This is the control the client will mostly use, to aim for a target length.
+- An **Advanced timing rules** section with the five rule values under plain labels: pause before reading (`base`), seconds per word (`per_word`), reading speed (`chars_per_sec`), shortest time on screen (`min_duration`), longest time on screen (`max_duration`).
+- **Hand edits win.** Moving any control recalculates every scene's duration from the rule, except scenes whose duration was typed into the table by hand. Those keep their value and are marked as hand-set. A **Reset all to the rule** button clears every hand-set duration.
+- Controls start at the `config.py` defaults each session. Nothing is saved; changing the defaults is still an edit to `config.py`.
+- Table edits are reconciled by scene id into a canonical state in `st.session_state`, and the editor's key is bumped after each edit. That stops stale editor edits being re-applied over durations the sliders have just recalculated.
 
 ## 11. Error handling
 
@@ -206,7 +218,7 @@ Three failures get explicit treatment. Everything else may raise.
 
 Chosen depth: real tests on the pure core, one end-to-end smoke test.
 
-**Unit.** Duration rule at the client's stated pairs and both clamps; natural sort against the `conversation_10` before `conversation_2` trap; id parsing and the multi-row-per-id join; the count-mismatch failure; SFX offsets accumulating without drift over 200 scenes; and zoom, shake and plain clips producing identical codec, fps and dimension flags.
+**Unit.** Duration rule at the client's stated pairs and both clamps; overall speed scaling every duration including the clamps; recalculating durations while keeping hand-set ones; natural sort against the `conversation_10` before `conversation_2` trap; id parsing and the multi-row-per-id join; the count-mismatch failure; SFX offsets accumulating without drift over 200 scenes; and zoom, shake and plain clips producing identical codec, fps and dimension flags.
 
 **Smoke.** Three real PNGs end to end, asserting the mp4 exists, ffprobe duration is within 0.1s of the sum, and exactly one audio stream is present.
 
