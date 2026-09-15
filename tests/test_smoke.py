@@ -154,6 +154,26 @@ def test_render_muxes_exactly_one_video_and_one_audio_stream(tmp_path):
     assert abs(_probe_duration(out) - expected_frames / 30) < 0.05
 
 
+def test_missing_music_fails_before_any_clip_is_rendered(tmp_path):
+    # The audio track is built first: a missing music file (or a missing
+    # sound effect) must fail in seconds, not after every clip has rendered.
+    scenes = []
+    for i, h in enumerate([340, 520], start=1):
+        img = tmp_path / f"conversation_{i}.png"
+        _make_png(img, 1200, h)
+        scenes.append(Scene(id=i, image_path=img, text="x", speaker="Mina",
+                            duration=1.0))
+    cfg = Config(music_path=tmp_path / "no_such_music.mp3")
+    workdir = tmp_path / "work"
+
+    with pytest.raises(FileNotFoundError, match="Background music not found"):
+        render(scenes, cfg, workdir, tmp_path / "final.mp4")
+
+    clips_dir = workdir / "clips"
+    assert not clips_dir.exists() or not any(clips_dir.iterdir())
+    assert not (workdir / "silent.mp4").exists()
+
+
 def test_animated_clips_concat_with_plain_ones(tmp_path):
     # Plain, zoom, shake and plain again, so animated clips sit in the
     # middle of the concat list, not just at the edges.

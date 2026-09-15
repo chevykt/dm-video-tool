@@ -30,9 +30,13 @@ def render_silent(scenes, cfg: Config, workdir: Path, out_path: Path,
 
 def render(scenes, cfg: Config, workdir: Path, out_path: Path,
            progress=None) -> Path:
-    """Full render: silent video, prepared audio track, muxed together."""
+    """Full render: prepared audio track, silent video, muxed together.
+
+    The track is built first: it takes seconds, and a missing music or sound
+    effect file then fails at once instead of after every clip has rendered.
+    """
     workdir.mkdir(parents=True, exist_ok=True)
-    silent = render_silent(scenes, cfg, workdir, workdir / "silent.mp4", progress)
     track = build_track(scenes, cfg, workdir / "track.wav")
+    silent = render_silent(scenes, cfg, workdir, workdir / "silent.mp4", progress)
     run(build_mux_cmd(silent, track, out_path))
     return out_path

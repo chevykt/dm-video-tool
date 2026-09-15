@@ -41,29 +41,58 @@ def _show_unexpected(e: BaseException) -> None:
         st.exception(e)
 
 
+def _video_name(csv_name: str, zip_names: list[str]) -> str:
+    """The download's file name: the uploaded sheet's, else the first zip's."""
+    for name in (csv_name, *zip_names):
+        stem = Path(name).stem.strip()
+        if stem:
+            return f"{stem}.mp4"
+    return "conversation.mp4"
+
+
+def _start_render() -> None:
+    # Runs before the rerun the click causes. That whole run then draws every
+    # control disabled and does the render at the bottom of the script:
+    # touching any control mid-render would otherwise stop the script at its
+    # next Streamlit call (runner.fastReruns) and silently cancel the render.
+    st.session_state.rendering = True
+    st.session_state.rendered = None  # never show a stale video as this attempt's
+    st.session_state.render_error = None
+
+
+st.session_state.setdefault("rendering", False)
+st.session_state.setdefault("rendered", None)
+st.session_state.setdefault("render_error", None)
+busy = st.session_state.rendering
+
 # Timing controls. Slider values live only for this session; config.py holds
 # the defaults they start from. app.py builds a Config, never an FFmpeg arg.
 with st.sidebar:
     st.header("Timing")
     speed = st.slider("Overall speed", 0.7, 1.5, DEFAULTS.speed, 0.05, format="%.2fx",
                       help="1.20x plays every message 20% faster. "
-                           "Durations you typed into the table are not changed.")
+                           "Durations you typed into the table are not changed.",
+                      disabled=busy)
     with st.expander("Advanced timing rules"):
-        base = st.slider("Pause before reading (s)", 0.0, 3.0, DEFAULTS.base, 0.05)
-        per_word = st.slider("Seconds per word", 0.10, 1.00, DEFAULTS.per_word, 0.01)
+        base = st.slider("Pause before reading (s)", 0.0, 3.0, DEFAULTS.base, 0.05,
+                         disabled=busy)
+        per_word = st.slider("Seconds per word", 0.10, 1.00, DEFAULTS.per_word, 0.01,
+                             disabled=busy)
         chars_per_sec = st.slider("Reading speed (characters per second)",
-                                  8.0, 30.0, DEFAULTS.chars_per_sec, 0.5)
+                                  8.0, 30.0, DEFAULTS.chars_per_sec, 0.5, disabled=busy)
         # Fixed ranges that meet at 3.0, so the floor can never exceed the ceiling.
         min_duration = st.slider("Shortest time on screen (s)",
-                                 0.5, 3.0, DEFAULTS.min_duration, 0.1)
+                                 0.5, 3.0, DEFAULTS.min_duration, 0.1, disabled=busy)
         max_duration = st.slider("Longest time on screen (s)",
-                                 3.0, 15.0, DEFAULTS.max_duration, 0.5)
+                                 3.0, 15.0, DEFAULTS.max_duration, 0.5, disabled=busy)
 
     st.header("Volume")
     sfx_gain_db = st.slider("Sound effect volume (dB)", -30.0, 6.0, DEFAULTS.sfx_gain_db, 0.5,
-                            help="0 dB plays the sound file at its own level.")
+                            help="0 dB plays the sound file at its own level.",
+                            disabled=busy)
     music_gain_db = st.slider("Music volume (dB)", -40.0, 0.0, DEFAULTS.music_gain_db, 0.5,
-                              help="0 dB plays the music file at its own level.")
+                              help="0 dB plays the music file at its own level.",
+                              disabled=busy)
 
 cfg = replace(DEFAULTS, speed=speed, base=base, per_word=per_word,
               chars_per_sec=chars_per_sec, min_duration=min_duration,
@@ -71,10 +100,10 @@ cfg = replace(DEFAULTS, speed=speed, base=base, per_word=per_word,
               sfx_gain_db=sfx_gain_db, music_gain_db=music_gain_db)
 
 zips = st.file_uploader("Image zips from Generate All", type="zip",
-                        accept_multiple_files=True)
-csv_file = st.file_uploader("Sheet exported as CSV", type="csv")
+                        accept_multiple_files=True, disabled=busy)
+csv_file = st.file_uploader("Sheet exported as CSV", type="csv", disabled=busy)
 
-if zips and csv_file and st.button("Load scenes"):
+if zips and csv_file and st.button("Load scenes", disabled=busy):
     work = Path(tempfile.mkdtemp(prefix="dmvideo_"))
     zip_paths = []
     for z in zips:
@@ -96,6 +125,8 @@ if zips and csv_file and st.button("Load scenes"):
     st.session_state.overrides = {}
     st.session_state.editor_version = st.session_state.get("editor_version", 0) + 1
     st.session_state.rendered = None  # a freshly loaded conversation has no render yet
+    st.session_state.render_error = None
+    st.session_state.video_name = _video_name(csv_file.name, [z.name for z in zips])
 
 if "scenes" in st.session_state:
     scenes = st.session_state.scenes
@@ -111,7 +142,8 @@ if "scenes" in st.session_state:
     try:
         edited = st.data_editor(
             table,
-            disabled=["id", "speaker", "message", "words", "hand-set"],
+            # Nothing is editable while a render runs (see _start_render).
+            disabled=True if busy else ["id", "speaker", "message", "words", "hand-set"],
             # The choices first, so they are on screen at laptop widths.
             column_order=TABLE_ORDER,
             column_config={
@@ -151,13 +183,13 @@ if "scenes" in st.session_state:
         st.session_state.editor_version += 1
         st.rerun()
 
-    if overrides and st.button("Reset all to the rule"):
+    if overrides and st.button("Reset all to the rule", disabled=busy):
         overrides.clear()
         st.session_state.editor_version += 1
         st.rerun()
 
     # Balance by ear in seconds instead of a full render.
-    if st.button("Preview audio mix (first 20 messages)"):
+    if st.button("Preview audio mix (first 20 messages)", disabled=busy):
         preview = Path(st.session_state.work) / "preview.wav"
         try:
             build_track(scenes[:20], cfg, preview)
@@ -166,33 +198,45 @@ if "scenes" in st.session_state:
         else:
             st.audio(str(preview))
 
-    if st.button("Render video", type="primary"):
+    st.button("Render video", type="primary", on_click=_start_render, disabled=busy)
+
+    if busy:
+        # The controls above are already drawn disabled for this run, so the
+        # flag is cleared now, before the render starts. Not in a `finally`:
+        # once a run is stopped (the Stop button, a closed tab) every
+        # session-state write raises again, so a flag cleared there would
+        # stay set and the next run would start rendering all over again.
+        st.session_state.rendering = False
+        st.warning("Rendering — please wait, don't change anything until it finishes.")
         work = Path(st.session_state.work)
         out = work / "final.mp4"
-        # Clear any previous result now, so a failed render never leaves a
-        # stale video on screen looking like it belongs to this attempt.
-        st.session_state.rendered = None
-        bar = st.progress(0.0, text="Rendering scenes")
+        bar = st.progress(0.0, text="Preparing the audio")
         try:
             with st.spinner("Rendering"):
                 render(scenes, cfg, work / "render", out,
                        progress=lambda i, n: bar.progress(i / n,
                                                           text=f"Scene {i} of {n}"))
-        except (FFmpegFailed, FileNotFoundError) as e:
-            st.error(str(e))
-            st.stop()
+        except Exception as e:  # shown after the rerun below, by type
+            st.session_state.render_error = e
+        else:
+            st.session_state.rendered = str(out)
+        st.rerun()  # redraw with every control enabled again
 
-        bar.empty()
-        st.session_state.rendered = str(out)
+    render_error = st.session_state.render_error
+    if isinstance(render_error, (FFmpegFailed, FileNotFoundError)):
+        st.error(str(render_error))
+    elif render_error is not None:
+        _show_unexpected(render_error)
 
-    # Rendered outside the button block so it survives reruns that aren't a
-    # fresh click of Render video: st.download_button itself triggers a
-    # rerun, and so do the sliders and table edits above. It stays on screen
-    # until the next successful render replaces it or Load scenes clears it.
-    rendered = st.session_state.get("rendered")
+    # Rendered outside the render block so it survives reruns that aren't a
+    # render: moving a slider or editing the table. It stays on screen until
+    # the next successful render replaces it or Load scenes clears it.
+    rendered = st.session_state.rendered
     if rendered and Path(rendered).exists():
         st.success("Done")
         st.caption("Last render. Press Render video again after changing settings.")
         st.video(rendered)
+        # on_click="ignore": downloading does not rerun the script.
         st.download_button("Download mp4", Path(rendered).read_bytes(),
-                           file_name="conversation.mp4", mime="video/mp4")
+                           file_name=st.session_state.get("video_name", "conversation.mp4"),
+                           mime="video/mp4", on_click="ignore")

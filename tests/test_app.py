@@ -18,6 +18,7 @@ import streamlit
 from streamlit.testing.v1 import AppTest
 
 from config import Config
+from pipeline.runner import FFmpegFailed
 from tests.test_smoke import _make_png
 
 APP_PATH = "../app.py"
@@ -180,6 +181,119 @@ def test_a_table_that_keeps_failing_shows_a_message_instead_of_looping(tmp_path,
     assert "send Keon a screenshot" in at.error[0].value
 
 
+def _click_render(at):
+    next(b for b in at.button if b.label == "Render video").click()
+    at.run()
+
+
+def _fake_render(action):
+    """Stand-in for pipeline.render.render. app.py imports it by name at the
+    top of every run, so patching the module attribute reaches the app."""
+    def fake(scenes, cfg, workdir, out_path, progress=None):
+        return action(Path(out_path), progress)
+    return fake
+
+
+def test_every_control_is_disabled_while_a_render_runs(tmp_path, monkeypatch):
+    # Streamlit stops a running script at its next call when any control is
+    # touched (runner.fastReruns), which silently cancelled renders. The
+    # render now runs in a pass where nothing can be touched.
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    assert not at.exception and not at.error
+
+    def freeze_mid_render(out_path, progress):
+        progress(1, 3)
+        streamlit.stop()  # end the run here, so the tree shows the render in progress
+
+    monkeypatch.setattr("pipeline.render.render", _fake_render(freeze_mid_render))
+    _click_render(at)
+
+    assert any("Rendering" in w.value and "please wait" in w.value for w in at.warning)
+    assert at.slider and all(s.disabled for s in at.sidebar.slider)
+    assert all(b.disabled for b in at.button)
+    assert all(u.proto.disabled for u in at.get("file_uploader"))
+    assert _editor_proto(at).disabled is True
+    # The flag is cleared even though the run ended mid-render.
+    assert at.session_state["rendering"] is False
+
+
+def test_a_finished_render_gives_the_controls_back_and_a_named_download(tmp_path, monkeypatch):
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    assert not at.exception and not at.error
+
+    def write_video(out_path, progress):
+        progress(3, 3)
+        out_path.write_bytes(b"not really an mp4")
+        return out_path
+
+    monkeypatch.setattr("pipeline.render.render", _fake_render(write_video))
+    real_download_button = streamlit.download_button
+    download_kwargs = {}
+
+    def recording_download_button(*args, **kwargs):
+        download_kwargs.update(kwargs)
+        return real_download_button(*args, **kwargs)
+
+    monkeypatch.setattr(streamlit, "download_button", recording_download_button)
+    _click_render(at)
+
+    assert not at.exception and not at.error
+    assert at.session_state["rendering"] is False
+    assert not at.warning
+    assert not any(s.disabled for s in at.sidebar.slider)
+    assert not any(b.disabled for b in at.button)
+    assert _editor_proto(at).disabled is False
+    assert len(at.get("video")) == 1
+
+    download = at.get("download_button")[0].proto
+    # Downloading must not rerun the script (on_click="ignore").
+    assert download.ignore_rerun is True
+    # Named after the uploaded sheet, not a generic conversation.mp4.
+    assert download_kwargs["file_name"] == "sheet.mp4"
+
+
+def test_a_failed_render_keeps_its_message_after_the_controls_come_back(tmp_path, monkeypatch):
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+
+    def fail(out_path, progress):
+        raise FFmpegFailed("FFmpeg exited 1:\nboom went the render")
+
+    monkeypatch.setattr("pipeline.render.render", _fake_render(fail))
+    _click_render(at)
+
+    assert not at.exception
+    assert len(at.error) == 1
+    assert "boom went the render" in at.error[0].value
+    assert at.session_state["rendering"] is False
+    assert at.session_state["rendered"] is None
+    assert not any(s.disabled for s in at.sidebar.slider)
+    assert len(at.get("video")) == 0
+
+
+def test_an_unexpected_render_error_shows_a_plain_message_with_details(tmp_path, monkeypatch):
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+
+    def crash(out_path, progress):
+        raise RuntimeError("an error nobody planned for")
+
+    monkeypatch.setattr("pipeline.render.render", _fake_render(crash))
+    _click_render(at)
+
+    assert len(at.error) == 1
+    assert "send Keon a screenshot" in at.error[0].value
+    details = next(e for e in at.expander if e.label == "Details")
+    assert "an error nobody planned for" in details.exception[0].message
+    assert at.session_state["rendering"] is False
+
+
 def test_overall_speed_slider_shortens_the_runtime(tmp_path):
     zip_path, csv_path = _build_upload(tmp_path)
     at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
@@ -229,15 +343,16 @@ def test_render_video_produces_no_error_and_a_video_player(tmp_path):
     assert not at.error
     assert len(at.success) >= 1
     assert len(at.get("video")) >= 1
+    assert at.session_state["rendering"] is False
+    assert not any(s.disabled for s in at.sidebar.slider)
 
     rendered_path = Path(at.session_state["rendered"])
     assert rendered_path.exists()
     mtime_after_render = rendered_path.stat().st_mtime
 
-    # A rerun that is NOT a fresh click of Render video -- this is what
-    # st.download_button's own click does, and what moving a slider or
-    # editing the table does too. The result must stay on screen, and
-    # FFmpeg must not have run again.
+    # A rerun that is NOT a fresh click of Render video -- what moving a
+    # slider or editing the table does. The result must stay on screen,
+    # and FFmpeg must not have run again.
     at.run()
 
     assert not at.exception
