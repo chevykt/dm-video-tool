@@ -64,13 +64,23 @@ def _start_render() -> None:
 st.session_state.setdefault("rendering", False)
 st.session_state.setdefault("rendered", None)
 st.session_state.setdefault("render_error", None)
+# Consumed here, before anything below that could raise or stop the script
+# (retime, the data editor, apply_table_edits, the self-heal's st.stop()):
+# a stopped run in Streamlit 1.63 cannot write session state, so clearing
+# the flag has to happen before any of that runs, not after it.
 busy = st.session_state.rendering
+st.session_state.rendering = False
 
 # Once per session: delete work folders left behind by sessions that ended
 # more than a day ago (a closed tab never gets to clean up after itself).
 if "swept" not in st.session_state:
     workdirs.sweep_stale(keep=st.session_state.get("work"))
     st.session_state.swept = True
+
+# Every run while a conversation is loaded: an idle tab (editing only, no
+# load/preview/render) would otherwise look untouched to sweep_stale above.
+if "work" in st.session_state:
+    workdirs.touch(st.session_state.work)
 
 # Timing controls. Slider values live only for this session; config.py holds
 # the defaults they start from. app.py builds a Config, never an FFmpeg arg.
@@ -189,6 +199,11 @@ if "scenes" in st.session_state:
         st.session_state.editor_reset = st.session_state.editor_version
         st.rerun()
 
+    # A successful edit against the current editor version: any self-heal
+    # marker left by an earlier bad state on this same version is now
+    # stale, so drop it and let the self-heal fire again if it happens again.
+    st.session_state.pop("editor_reset", None)
+
     # Fold edits into the canonical state. Match by id, never by row position:
     # the table can be sorted in the UI. The comparison logic itself lives in
     # table_edits.py so it can be unit tested without a Streamlit runtime.
@@ -221,12 +236,9 @@ if "scenes" in st.session_state:
     st.button("Render video", type="primary", on_click=_start_render, disabled=busy)
 
     if busy:
-        # The controls above are already drawn disabled for this run, so the
-        # flag is cleared now, before the render starts. Not in a `finally`:
-        # once a run is stopped (the Stop button, a closed tab) every
-        # session-state write raises again, so a flag cleared there would
-        # stay set and the next run would start rendering all over again.
-        st.session_state.rendering = False
+        # `rendering` was already cleared above, before this run could raise
+        # or stop, so the next run starts clean either way; the controls
+        # above are drawn disabled for this run from the local `busy`.
         st.warning("Rendering — please wait, don't change anything until it finishes.")
         work = Path(st.session_state.work)
         out = work / "final.mp4"

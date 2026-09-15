@@ -19,6 +19,7 @@ import pytest
 import streamlit
 from streamlit.testing.v1 import AppTest
 
+import workdirs
 from config import Config
 from pipeline.runner import FFmpegFailed
 from tests.test_smoke import _make_png
@@ -165,6 +166,89 @@ def test_a_broken_table_state_resets_the_table_instead_of_crashing(tmp_path, mon
     assert calls[1] != calls[0]  # the retry used a fresh editor key
     assert len(at.get("dataframe")) == 1
     assert any(b.label == "Render video" for b in at.button)
+
+
+def test_editor_reset_clears_after_a_normal_successful_run(tmp_path):
+    # editor_reset marks that the *current* editor version already went
+    # through the self-heal in test_a_broken_table_state_resets_the_table_
+    # instead_of_crashing, above. Once a normal edit succeeds against that
+    # version, the marker must be dropped so a later bad state can self-heal
+    # again instead of going straight to _show_unexpected.
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    assert not at.exception and not at.error
+
+    at.session_state["editor_reset"] = at.session_state["editor_version"]
+    at.run()  # a normal run: st.data_editor succeeds
+
+    assert not at.exception and not at.error
+    assert "editor_reset" not in at.session_state
+
+
+def test_rendering_flag_clears_even_if_the_run_fails_before_the_render_block(tmp_path, monkeypatch):
+    # A crash between "Render video" being clicked and the render block at
+    # the bottom (here, retime() blowing up while redrawing the scene table)
+    # must not leave `rendering` stuck true. If it does, the *next* run --
+    # once retime works again -- wrongly finds itself "mid-render" and fires
+    # off an unwanted render, rather than just redrawing normally.
+    import pipeline.scenes
+
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    assert not at.exception and not at.error
+
+    next(b for b in at.button if b.label == "Render video").click()
+
+    real_retime = pipeline.scenes.retime
+    tripped = []
+
+    def crash_once(*args, **kwargs):
+        if not tripped:
+            tripped.append(1)
+            raise RuntimeError("boom before the render block")
+        return real_retime(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.scenes, "retime", crash_once)
+
+    render_calls = []
+
+    def fake_render(scenes, cfg, workdir, out_path, progress=None):
+        render_calls.append(1)
+        Path(out_path).write_bytes(b"not really an mp4")
+        return out_path
+
+    monkeypatch.setattr("pipeline.render.render", fake_render)
+
+    at.run()  # this run fails before reaching the render block
+    assert at.exception  # sanity: the run really did fail early
+
+    at.run()  # the next run: retime succeeds now (tripped is non-empty)
+
+    assert not at.exception and not at.error
+    assert at.session_state["rendering"] is False
+    assert not any(s.disabled for s in at.sidebar.slider)
+    assert not any(b.disabled for b in at.button)
+    assert _editor_proto(at).disabled is False
+    # The crashed run must not leave a render queued up behind it.
+    assert render_calls == []
+
+
+def test_app_touches_the_work_dir_on_every_run_while_loaded(tmp_path, monkeypatch):
+    # A tab left open for editing only (no load, preview or render) must
+    # still mark its work folder as used, or a long-idle tab can lose it to
+    # the next session's sweep.
+    zip_path, csv_path = _build_upload(tmp_path)
+    at = AppTest.from_file(APP_PATH, default_timeout=TIMEOUT)
+    _load_scenes(at, zip_path, csv_path)
+    assert not at.exception and not at.error
+
+    calls = []
+    monkeypatch.setattr(workdirs, "touch", lambda path: calls.append(path))
+    at.run()  # a rerun with no load, preview or render -- editing only
+
+    assert calls == [at.session_state["work"]]
 
 
 def test_a_table_that_keeps_failing_shows_a_message_instead_of_looping(tmp_path, monkeypatch):

@@ -6,6 +6,7 @@ when they are replaced, and ones left behind (a closed tab, a crash) are
 swept a day later. No streamlit import here: app.py is the only module that
 imports streamlit, so this can be unit tested on its own.
 """
+import os
 import shutil
 import tempfile
 import time
@@ -24,6 +25,17 @@ def remove(path) -> None:
     locked on Windows, and a folder left behind is swept later."""
     if path:
         shutil.rmtree(path, ignore_errors=True)
+
+
+def touch(path) -> None:
+    """Mark a work folder as used just now, so a tab left open only for
+    editing (no load, preview or render touches its files) is not mistaken
+    by sweep_stale for one left behind by a session that ended. Never
+    raises: the folder may no longer exist."""
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
 
 
 def _last_used(folder: Path) -> float:

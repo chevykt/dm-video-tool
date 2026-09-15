@@ -81,3 +81,17 @@ def test_remove_ignores_missing_folders_and_none(tmp_path):
     (target / "render").mkdir(parents=True)
     workdirs.remove(target)
     assert not target.exists()
+
+
+def test_touch_updates_the_mtime_so_an_idle_folder_is_not_swept(temp_root):
+    folder = temp_root / "dmvideo_idle"
+    folder.mkdir()
+    _age(folder, 2 * DAY)
+
+    workdirs.touch(folder)
+
+    assert folder.stat().st_mtime == pytest.approx(time.time(), abs=5)
+
+
+def test_touch_ignores_a_folder_that_no_longer_exists(tmp_path):
+    workdirs.touch(tmp_path / "never_existed")  # must not raise
