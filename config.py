@@ -33,7 +33,7 @@ class Config:
     sfx_dir: Path = Path("assets/sfx")
     default_sfx: str = "pop"
     sfx_gain_db: float = -3.0
-    music_path: Path | None = None
+    music_path: Path | None = Path("assets/music/background.mp3")
     music_gain_db: float = -18.0
 
     def sfx_path(self, name: str) -> Path:
