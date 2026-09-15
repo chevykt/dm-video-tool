@@ -123,7 +123,7 @@ Taking the **larger** of the word-based and character-based figures is what stop
 
 **Overall speed.** `speed` divides the result *after* the clamp, so every scene scales by the same factor, the floor and ceiling included. The total runtime therefore scales by exactly `1 / speed`, which is what lets the interface show the new runtime while the slider moves. The client approved stage 1 pacing at `speed = 1.0`, so the defaults stay unchanged.
 
-The `(text)` prefix on some rows is deliberate narration: it marks messages sent in a private thread rather than the group chat. It renders on screen, the viewer reads it, so it counts toward duration like any other text. Nothing is stripped and there is no config flag for it.
+The `(text)` prefix on some rows of the test conversation turned out to be demo content, not narration: the client confirmed on 2026-09-15 that it will not appear in real scripts. The renderer never draws text. Whatever is in the sheet's `message` cell is drawn into the PNG by the client's Apps Script, and the renderer only reads it to time the scene. So removing `(text)` means deleting it from the sheet before Generate All; the timing then adjusts on its own. Nothing is stripped in code and there is no config flag for it.
 
 ## 7. Compositing
 
@@ -154,6 +154,8 @@ zoompan=z='min(zoom+0.0015,1.25)':d=<frames>:
 
 **Zoom, punch-in (fallback).** Two clips: 40% of the duration at normal framing, then a hard cut to a centre crop scaled back up. Frame-accurate, no jitter, and it is the standard meme-edit vocabulary for landing a joke. Selected by `config.zoom_mode`.
 
+**Client choice (2026-09-15).** Shown both modes on real scenes, the client chose the animated zoom. They read the punch-in's delayed cut as a glitch ("the zoom happened about 1 sec after the image was shown"). `zoom_mode` stays `"animated"`, and punch-in remains available only as the config fallback.
+
 **Shake.** A time-varying crop offset on the composited frame, scaled back to canvas:
 
 ```
@@ -183,7 +185,7 @@ ffmpeg -y -i silent.mp4 -i track.wav -c:v copy -c:a aac -b:a 192k \
   -shortest -movflags +faststart final.mp4
 ```
 
-**Levels.** `sfx_gain_db` and `music_gain_db` are dB offsets applied in pydub: 0 dB plays a file at its own level, and negative values turn it down. The `config.py` values are the defaults, and the interface can change both per session (§10). Measured at stage 2 with the client's files at the original defaults (-3 / -18), the music sat about 24 dB under the SFX and read as silent. The music default is raised once the client gives their balance answer.
+**Levels.** `sfx_gain_db` and `music_gain_db` are dB offsets applied in pydub: 0 dB plays a file at its own level, and negative values turn it down. The `config.py` values are the defaults, and the interface can change both per session (§10). Measured at stage 2 with the client's files at the original defaults (-3 / -18), the music sat about 24 dB under the SFX and read as silent. The client approved the stage 3 sample rendered at `music_gain_db = -10`, which is now the default.
 
 **Music licensing is a client responsibility and has been raised with them.** One track across 30 monetised channels is a copyright-claim generator if it is not properly cleared.
 
@@ -194,9 +196,9 @@ Streamlit, deliberately minimal, and the only replaceable part of the system.
 1. Upload one or more `.zip` files (multiple, because a 200-row Generate All likely exceeds Apps Script's six-minute execution cap and is probably already run in batches)
 2. Upload the sheet CSV
 3. Timing and volume controls in the sidebar (see below)
-4. An editable scene table: id, message preview, word count, **duration**, **zoom**, **shake**, **sfx preset**
+4. An editable scene table: id, message preview, word count, **duration**, **zoom**, **shake**, **sfx preset**. This is the primary way to choose which messages zoom or shake and which sound each one plays; the client asked for it to be in the app rather than the spreadsheet (2026-09-15). Optional `zoom` / `shake` columns in the sheet still pre-fill the tick boxes.
 5. Render, with a spinner
-6. Preview and download
+6. Preview and download. The last render stays on screen across reruns (a download, a slider move) until the next render or a new load, and is labelled as the last render.
 
 Scene state lives in `st.session_state`, or edits are wiped on every rerun. `server.maxUploadSize` must be raised; 200 PNGs run 40 to 100MB.
 

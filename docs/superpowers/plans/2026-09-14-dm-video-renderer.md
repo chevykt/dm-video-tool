@@ -1085,6 +1085,8 @@ Render both `zoom_mode` values and show the client each. Too much or too little 
 
 Timing controls were requested by the client on 2026-09-15, after they approved the stage 1 pacing. See spec §2 item 8 and §10 "Timing controls". The rule logic stays in `pipeline/` and is unit tested; `app.py` only reads sliders and builds a `Config`.
 
+**Amended 2026-09-15 after the Task 8 review.** The code below shows the success message, video and download button only inside `if st.button("Render video")`, so the rerun caused by the download itself wipes them. As built, the last render's path is kept in `st.session_state` and shown outside the button block, labelled as the last render, until the next Render or Load. The edit-reconciliation loop lives in `table_edits.apply_table_edits` (unit tested, no streamlit import), `st.data_editor` uses `width="stretch"`, and `.streamlit/config.toml` also turns off the first-run email prompt and usage stats. The repo is authoritative over the code below.
+
 Volume controls were requested on 2026-09-15 during the stage 2 review. See spec §2 item 9 and §10 "Volume controls". `build_track` has read `sfx_gain_db` and `music_gain_db` since Task 6, so no pipeline change is needed: the sliders set the two values on the `Config`, and **Preview audio mix** calls `build_track` on the first 20 scenes.
 
 - [ ] **Step 1: Raise the upload limit**
