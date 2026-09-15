@@ -35,7 +35,7 @@ class Config:
     default_sfx: str = "pop"
     sfx_gain_db: float = -3.0
     music_path: Path | None = Path("assets/music/background.mp3")
-    music_gain_db: float = -18.0
+    music_gain_db: float = -10.0  # client approved the stage 3 sample at -10 dB
 
     def sfx_path(self, name: str) -> Path:
         return self.sfx_dir / f"{name}.wav"
