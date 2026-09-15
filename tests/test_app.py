@@ -8,6 +8,7 @@ not installed).
 import csv
 import re
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -19,6 +20,17 @@ from tests.test_smoke import _make_png
 
 APP_PATH = "../app.py"
 TIMEOUT = 60
+
+
+@pytest.fixture(autouse=True)
+def temp_root(tmp_path, monkeypatch):
+    """app.py makes its work dirs with tempfile. AppTest runs the script in
+    this process, so pointing tempfile at tmp_path keeps every dmvideo_* dir
+    a test creates out of the real temp folder."""
+    root = tmp_path / "tmp"
+    root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(root))
+    return root
 
 
 def _build_upload(tmp_path):
